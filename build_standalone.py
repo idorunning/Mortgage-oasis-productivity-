@@ -13,6 +13,7 @@ Usage:
   python3 build_standalone.py --src export.md  --out mortgage_oasis_app.html
 """
 import argparse
+import base64
 import datetime
 import json
 import pathlib
@@ -32,6 +33,11 @@ def build(rows, out_path):
     html = (STATIC / "index.html").read_text(encoding="utf-8")
 
     payload = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")  # safe inside <script>
+
+    logo = STATIC / "logo.jpg"
+    if logo.exists():  # inline the brand mark so it shows in the offline file
+        uri = "data:image/jpeg;base64," + base64.b64encode(logo.read_bytes()).decode()
+        html = html.replace('src="logo.jpg"', f'src="{uri}"')
 
     html = html.replace('<link rel="stylesheet" href="styles.css">',
                          f"<style>\n{css}\n</style>")

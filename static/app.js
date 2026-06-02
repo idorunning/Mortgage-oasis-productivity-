@@ -4,7 +4,8 @@ let DATA = null;
 const F = { year: "", adviser: "", biz: "" };      // global filters
 let EXPLORER = {};                                  // drill-down filter (category/provider/area)
 const PEOPLE = { tab: "team", selected: new Set(), leaver: "", roleFilter: "all" };  // People state
-const C = { teal: "#5FB7AE", sage: "#8FCBA9", blue: "#8FBCE0", sand: "#E6C98A", coral: "#EE9A8C" };
+// brand pastels (keys kept generic; values are the pink/purple scheme)
+const C = { teal: "#B79AD8", sage: "#E79BC9", blue: "#9DB8E6", sand: "#E6C173", coral: "#E27B96" };
 
 const $ = (s, r = document) => r.querySelector(s);
 // Server mode fetches /api/data; offline snapshot reads window.EMBEDDED_DATA.
