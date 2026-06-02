@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mortgage Oasis — BD Dashboard</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand"><span class="logo">🏠</span> Mortgage Oasis</div>
+    <nav class="nav" id="nav">
+      <a href="#overview" data-route="overview">📊 Overview</a>
+      <a href="#pipeline" data-route="pipeline">📅 Pipeline</a>
+      <a href="#advisers" data-route="advisers">👥 Advisers</a>
+      <a href="#crosssell" data-route="crosssell">🎯 Cross-sell</a>
+      <a href="#referrals" data-route="referrals">🤝 Referrals</a>
+      <a href="#explorer" data-route="explorer">🔎 Explorer</a>
+      <a href="#quality" data-route="quality">🧹 Data quality</a>
+    </nav>
+    <div class="foot">Local &amp; private — data never leaves this machine.</div>
+  </aside>
+
+  <main class="main">
+    <div class="top">
+      <div>
+        <h1 id="pageTitle">Overview</h1>
+        <div class="src" id="srcLine">Loading…</div>
+      </div>
+      <div class="spacer"></div>
+      <div class="filters">
+        <select id="fYear"><option value="">All years</option></select>
+        <select id="fAdviser"><option value="">All advisers</option></select>
+        <select id="fBiz"><option value="">All business</option></select>
+        <button class="btn sec" id="btnReset">Reset</button>
+        <button class="btn" id="btnRefresh">↻ Refresh data</button>
+      </div>
+    </div>
+    <div id="view"><div class="loading">Loading dashboard…</div></div>
+  </main>
+</div>
+
+<script src="charts.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

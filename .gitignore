@@ -2,12 +2,24 @@
 dashboard.html
 report.txt
 
+# Secrets & credentials
+.env
+service_account*.json
+*credentials*.json
+token.json
+
 # Raw data exports
 *.csv
 *.tsv
 *.xlsx
+*.md.json
+export.md
 *-export.*
 
 # Python
 __pycache__/
 *.pyc
+.pytest_cache/
+*.cache
+.venv/
+venv/

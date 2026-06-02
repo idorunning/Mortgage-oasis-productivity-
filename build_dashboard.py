@@ -1,397 +1,24 @@
 #!/usr/bin/env python3
 """
-build_dashboard.py — Mortgage Oasis BD insights dashboard generator.
+build_dashboard.py — offline single-file export.
 
-Reads the case-log spreadsheet export and produces a single, self-contained,
-offline `dashboard.html` (no server, no external requests) plus a plain-text
-report body for a Google Doc.
+Produces a self-contained `dashboard.html` (no server, no external requests) plus
+a plain-text report body, using the shared analytics engine in
+`mortgage_oasis.analytics`. Use this when you want a portable file to email or
+archive; for the interactive live app run `app.py` instead.
 
 Input options:
   --src  <file>   JSON export {"fileContent": "<markdown tables>"} (default)
   --csv  <file>   A CSV export from Google Sheets (File -> Download -> CSV)
   --out  <file>   Output HTML path (default: dashboard.html)
-
-The parser is name-based: the sheet stacks several tables with *different*
-column schemas per year, so each `| Date | ...` header row is detected and its
-columns mapped to a canonical record by header name (not by position).
-
-NOTE: remortgage "review" dates assume a 2-year product (TERM_MONTHS); the
-sheet does not record the fixed term. Adjust TERM_MONTHS if your typical
-product differs.
 """
-import argparse, json, re, csv, html, datetime, io, sys
-from collections import defaultdict, Counter
+import argparse
+import json
+import datetime
 
-# Review the client this many months after completion (2yr product, engage ~3mo early)
-TERM_MONTHS = 21
-
-# ---- known reference data -------------------------------------------------
-LENDERS = {
-    "nationwide", "halifax", "barclays", "natwest", "hsbc", "leeds", "santander",
-    "skipton", "tsb", "virgin", "bm solutions", "west one", "aldermore", "coventry",
-    "bank of ireland", "accord", "precise", "fluent", "the mortgage lender",
-    "co-op", "co-operative", "kensington", "principality", "nottingham", "metro",
-}
-NON_SOURCE = {"", "n/a", "na", "n/a.", "-", "none", "nil"}
+from mortgage_oasis import analytics
 
 
-# ---- parsing --------------------------------------------------------------
-def load_markdown(src_path):
-    with open(src_path, encoding="utf-8") as fh:
-        raw = fh.read()
-    try:
-        return json.loads(raw)["fileContent"]
-    except (json.JSONDecodeError, KeyError):
-        return raw  # already plain markdown
-
-
-def split_md_row(line):
-    line = line.strip()
-    if line.startswith("|"):
-        line = line[1:]
-    if line.endswith("|"):
-        line = line[:-1]
-    return [c.strip() for c in line.split("|")]
-
-
-def parse_markdown(md):
-    """Return list of dicts keyed by that section's header names."""
-    rows = []
-    header = None
-    for line in md.split("\n"):
-        if not line.strip().startswith("|"):
-            continue
-        cells = split_md_row(line)
-        joined = "".join(cells).replace(" ", "")
-        if set(joined) <= set(":-") and joined:  # separator row | :-: | :-: |
-            continue
-        if cells and cells[0] == "Date":
-            header = cells
-            continue
-        if header is None:
-            continue
-        rec = {}
-        for i, name in enumerate(header):
-            rec[name] = cells[i] if i < len(cells) else ""
-        rows.append(rec)
-    return rows
-
-
-def parse_csv(csv_path):
-    with open(csv_path, encoding="utf-8-sig") as fh:
-        reader = csv.reader(fh)
-        all_rows = list(reader)
-    rows, header = [], None
-    for cells in all_rows:
-        cells = [c.strip() for c in cells]
-        if cells and cells[0] == "Date":
-            header = cells
-            continue
-        if header is None or not any(cells):
-            continue
-        rows.append({header[i]: (cells[i] if i < len(cells) else "")
-                     for i in range(len(header))})
-    return rows
-
-
-# ---- normalization --------------------------------------------------------
-def get(rec, *names):
-    for n in names:
-        for key in rec:
-            if key.strip() == n:
-                v = rec[key].strip()
-                if v:
-                    return v
-    return ""
-
-
-def parse_date(s):
-    s = s.strip()
-    for fmt in ("%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d"):
-        try:
-            return datetime.datetime.strptime(s, fmt).date()
-        except ValueError:
-            continue
-    return None
-
-
-def add_months(d, months):
-    m = d.month - 1 + months
-    y = d.year + m // 12
-    m = m % 12 + 1
-    day = min(d.day, [31, 29 if y % 4 == 0 and (y % 100 or not y % 400) else 28,
-                      31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1])
-    return datetime.date(y, m, day)
-
-
-def parse_money(s):
-    s = s.replace("£", "").replace(",", "").strip()
-    if not s or s in {"-", "\\-"}:
-        return None
-    try:
-        return float(s)
-    except ValueError:
-        return None
-
-
-def canonical_source(src):
-    s = re.sub(r"\s+", " ", src).strip()
-    low = s.lower()
-    # treat blanks, header fragments and stray dates (column misalignment) as unrecorded
-    if (low in NON_SOURCE or low in {"source", "date completed", "introducer/source"}
-            or re.fullmatch(r"[\d/.\-]+", s)):
-        return "Not recorded"
-    if re.search(r"personal refer", low):
-        return "Personal Referral"
-    if re.search(r"professional refer", low):
-        return "Professional Referral"
-    if low in {"o'shea", "o’shea"}:
-        return "O'Shea"
-    return s
-
-
-def norm_name_key(name):
-    n = name.lower()
-    n = n.replace("&", " and ")
-    n = re.sub(r"[^a-z\s]", " ", n)
-    n = re.sub(r"\s+", " ", n).strip()
-    # drop the joining word so "a and b" == "b and a"
-    parts = [p for p in n.split() if p != "and"]
-    return " ".join(sorted(parts))
-
-
-def extract_postcode(addr):
-    m = re.search(r"\b([A-Z]{1,2}\d[A-Z\d]?)\s*\d[A-Z]{2}\b", addr.upper())
-    if m:
-        return m.group(1)
-    return ""
-
-
-def postcode_area(pc):
-    m = re.match(r"^([A-Z]{1,2})", pc)
-    return m.group(1) if m else ""
-
-
-PROT_PATTERNS = [
-    ("IP", re.compile(r"income protection|\bip\b", re.I)),
-    ("CIC", re.compile(r"critical illness|\bcic\b|life and cic|life and cic", re.I)),
-    ("Life", re.compile(r"\blife\b|life cover|life insurance", re.I)),
-    ("ASU", re.compile(r"\basu\b|accident|sickness", re.I)),
-    ("GI", re.compile(r"home and contents|buildings?|contents|home insurance|\bgi\b", re.I)),
-]
-MORTGAGE_PATTERNS = re.compile(
-    r"remortgage|product transfer|\bpt\b|first time buyer|\bftb\b|home mover|"
-    r"\bmover\b|purchase|house move|2nd charge|second charge|btl|buy to let",
-    re.I)
-REMO_PATTERNS = re.compile(r"remortgage|product transfer|\bpt\b", re.I)
-
-
-def classify(biz, product):
-    text = f"{biz} {product}".lower()
-    is_mcr = "mcr" in text
-    prot_types = set()
-    for label, pat in PROT_PATTERNS:
-        if pat.search(text):
-            prot_types.add(label)
-    # "life and cic" implies both
-    if re.search(r"life and ci", text):
-        prot_types.update({"Life", "CIC"})
-    # protection if any protection keyword OR business type literally "protection"
-    is_protection = bool(prot_types) or "protection" == biz.strip().lower()
-    is_mortgage = bool(MORTGAGE_PATTERNS.search(text)) and not is_protection
-    if is_mcr:
-        is_mortgage = is_protection = False
-    return is_mortgage, is_protection, is_mcr, prot_types
-
-
-def build_records(raw_rows):
-    recs = []
-    for r in raw_rows:
-        client = get(r, "Client Name", "Client")
-        if not client:
-            continue
-        biz = get(r, "Type of Business")
-        product = get(r, "Type of Product") or biz
-        provider = get(r, "Provider/lender", "Protection/Provider/lender")
-        addr = get(r, "Property")
-        d = parse_date(get(r, "Date"))
-        pc = extract_postcode(addr)
-        is_m, is_p, is_mcr, ptypes = classify(biz, product)
-        # de-leak: lender name landed in product column
-        lender_leak = product.strip().lower() in LENDERS
-        src = get(r, "Introducer/Source")
-        num = re.search(r"\d+", addr)
-        addr_key = f"{pc}/{num.group()}" if pc and num else ""
-        recs.append({
-            "addr_key": addr_key,
-            "date": d.isoformat() if d else "",
-            "date_obj": d,
-            "year": d.year if d else None,
-            "client": client,
-            "key": norm_name_key(client),
-            "admin": get(r, "Administrator", "Admin").title() or "",
-            "source": src,
-            "source_norm": canonical_source(src),
-            "property": addr,
-            "postcode": pc,
-            "area": postcode_area(pc),
-            "biz": biz,
-            "product": product,
-            "provider": provider,
-            "amount": parse_money(get(r, "Sum Assured/Mortgage Amount",
-                                      "Sum Assured//Mortgage Amount")),
-            "premium": parse_money(get(r, "Monthly Premium", "Protection and /GI")),
-            "fee": parse_money(get(r, "Broker Fee", "Broker /Fee")),
-            "comm_written": parse_money(get(r, "Commisison Written", "Commisison/Written")),
-            "comm_received": parse_money(get(r, "Commission Received", "Commission /Received")),
-            "is_mortgage": is_m,
-            "is_protection": is_p,
-            "is_mcr": is_mcr,
-            "prot_types": sorted(ptypes),
-            "lender_leak": lender_leak,
-        })
-    return recs
-
-
-# ---- cross-reference / BD lists ------------------------------------------
-def link_households(recs):
-    """Union-find: two records are the same household if they share a name key
-    OR a property address (postcode + house number). Address linking catches
-    joint-name protection vs single-name mortgage cases."""
-    parent = list(range(len(recs)))
-
-    def find(x):
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def union(a, b):
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[ra] = rb
-
-    sig = defaultdict(list)
-    for i, r in enumerate(recs):
-        if r["key"]:
-            sig["n:" + r["key"]].append(i)
-        if r["addr_key"]:
-            sig["a:" + r["addr_key"]].append(i)
-    for idxs in sig.values():
-        for j in idxs[1:]:
-            union(idxs[0], j)
-    for i, r in enumerate(recs):
-        r["hh"] = find(i)
-    return recs
-
-
-def build_lists(recs):
-    link_households(recs)
-    by_key = defaultdict(list)
-    for r in recs:
-        by_key[r["hh"]].append(r)
-
-    protection_gap, life_only, pipeline = [], [], []
-    today = datetime.date.today()
-
-    for key, items in by_key.items():
-        mortgages = [i for i in items if i["is_mortgage"]]
-        prots = [i for i in items if i["is_protection"]]
-        ptypes = set()
-        for p in prots:
-            ptypes.update(p["prot_types"])
-        display = max((i["client"] for i in items), key=len)
-
-        if mortgages and not prots:
-            latest = max(mortgages, key=lambda x: x["date_obj"] or datetime.date.min)
-            protection_gap.append({
-                "client": display, "property": latest["property"],
-                "lender": latest["provider"], "amount": latest["amount"],
-                "date": latest["date"], "admin": latest["admin"],
-                "product": latest["product"],
-                "action": "Book protection review (no cover on file)",
-            })
-        if "Life" in ptypes and not ({"CIC", "IP"} & ptypes):
-            base = prots[0]
-            life_only.append({
-                "client": display, "property": base["property"],
-                "have": "Life", "missing": "Critical Illness + Income Protection",
-                "admin": base["admin"],
-                "action": "Offer CIC / Income Protection top-up",
-            })
-
-    for r in recs:
-        if r["date_obj"] and REMO_PATTERNS.search(f"{r['biz']} {r['product']}".lower()):
-            review = add_months(r["date_obj"], TERM_MONTHS)
-            pipeline.append({
-                "client": r["client"], "property": r["property"],
-                "lender": r["provider"], "amount": r["amount"],
-                "completed": r["date"], "review_date": review.isoformat(),
-                "review_sort": review.isoformat(),
-                "overdue": review <= today,
-                "admin": r["admin"], "product": r["product"],
-                "action": "Remortgage review approaching maturity",
-            })
-    pipeline.sort(key=lambda x: x["review_sort"])
-    protection_gap.sort(key=lambda x: (x["amount"] or 0), reverse=True)
-    return protection_gap, life_only, pipeline
-
-
-def build_referrals(recs):
-    agg = defaultdict(lambda: {"count": 0, "comm": 0.0, "clients": set()})
-    for r in recs:
-        s = r["source_norm"]
-        agg[s]["count"] += 1
-        agg[s]["comm"] += r["comm_written"] or 0
-        agg[s]["clients"].add(r["client"])
-    out = []
-    for s, v in agg.items():
-        out.append({"source": s, "count": v["count"],
-                    "comm": round(v["comm"]), "clients": len(v["clients"])})
-    out.sort(key=lambda x: x["count"], reverse=True)
-    return out
-
-
-def build_cleanup(recs):
-    issues = []
-    # name variants merged under one key
-    raw_by_key = defaultdict(set)
-    for r in recs:
-        raw_by_key[r["key"]].add(r["client"])
-    variants = {k: sorted(v) for k, v in raw_by_key.items() if len(v) > 1}
-    for k, names in sorted(variants.items()):
-        issues.append({"type": "Name variants (same client)", "detail": " / ".join(names)})
-    # lender leaked into product column
-    for r in recs:
-        if r["lender_leak"]:
-            issues.append({"type": "Lender in product column",
-                           "detail": f'{r["client"]} — product="{r["product"]}"'})
-    return issues, len(variants)
-
-
-# ---- KPIs -----------------------------------------------------------------
-def build_kpis(recs, protection_gap):
-    keys = defaultdict(list)
-    for r in recs:
-        keys[r["hh"]].append(r)
-    mort_clients = {k for k, v in keys.items() if any(i["is_mortgage"] for i in v)}
-    prot_clients = {k for k, v in keys.items() if any(i["is_protection"] for i in v)}
-    attached = mort_clients & prot_clients
-    attach_rate = round(100 * len(attached) / len(mort_clients)) if mort_clients else 0
-    sources_recorded = sum(1 for r in recs if r["source_norm"] != "Not recorded")
-    return {
-        "total_rows": len(recs),
-        "clients": len(keys),
-        "mortgage_clients": len(mort_clients),
-        "protection_clients": len(prot_clients),
-        "attach_rate": attach_rate,
-        "protection_gap": len(protection_gap),
-        "mcr_cases": sum(1 for r in recs if r["is_mcr"]),
-        "source_coverage": round(100 * sources_recorded / len(recs)) if recs else 0,
-    }
-
-
-# ---- HTML render ----------------------------------------------------------
 def render_html(data):
     payload = json.dumps(data, ensure_ascii=False)
     return HTML_TEMPLATE.replace("/*__DATA__*/null", payload)
@@ -535,7 +162,6 @@ function gcalLink(title,dateIso,desc){
 
 /* ---- generic table builder with select + bulk calendar ---- */
 function tablePanel(opts){
-  // opts: {key, rows, cols:[{k,label,fmt,cls}], title(row)->str, date(row)->iso, desc(row)->str}
   const wrap=ce('div');
   const note=ce('div','note');note.innerHTML=opts.note||'';wrap.appendChild(note);
   const tb=ce('div','toolbar');
@@ -671,41 +297,22 @@ def main():
     args = ap.parse_args()
 
     if args.csv:
-        raw_rows = parse_csv(args.csv)
+        rows = analytics.parse_csv(args.csv)
     else:
-        raw_rows = parse_markdown(load_markdown(args.src))
+        rows = analytics.parse_markdown(analytics.load_markdown(args.src))
 
-    recs = build_records(raw_rows)
-    protection_gap, life_only, pipeline = build_lists(recs)
-    referrals = build_referrals(recs)
-    cleanup, variant_count = build_cleanup(recs)
-    kpis = build_kpis(recs, protection_gap)
-
-    data = {
-        "generated": datetime.date.today().isoformat(),
-        "term_months": TERM_MONTHS,
-        "kpis": kpis,
-        "protection_gap": protection_gap,
-        "life_only": life_only,
-        "pipeline": pipeline,
-        "referrals": referrals,
-        "cleanup": cleanup,
-        "cleanup_variant_count": variant_count,
-    }
+    data = analytics.analyse(rows)
     with open(args.out, "w", encoding="utf-8") as fh:
         fh.write(render_html(data))
     with open(args.report, "w", encoding="utf-8") as fh:
         fh.write(build_report_text(data))
 
+    k = data["kpis"]
     print("=== build summary ===")
-    for k, v in kpis.items():
-        print(f"  {k}: {v}")
-    print(f"  protection_gap rows: {len(protection_gap)}")
-    print(f"  life_only rows: {len(life_only)}")
-    print(f"  pipeline rows: {len(pipeline)}")
-    print(f"  referral sources: {len(referrals)}")
-    print(f"  cleanup issues: {len(cleanup)}")
-    print(f"  parsed records: {len(recs)}")
+    for key in ("total_rows", "clients", "mortgage_clients", "attach_rate",
+                "protection_gap", "mcr_cases", "source_coverage"):
+        print(f"  {key}: {k[key]}")
+    print(f"  pipeline rows: {len(data['pipeline'])}")
     print(f"wrote {args.out} and {args.report}")
 
 
