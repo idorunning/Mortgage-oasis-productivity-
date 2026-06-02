@@ -136,9 +136,11 @@ def parse_money(s):
 
 def canonical_source(src):
     s = re.sub(r"\s+", " ", src).strip()
-    if s.lower() in NON_SOURCE:
-        return "Not recorded"
     low = s.lower()
+    # treat blanks, header fragments and stray dates (column misalignment) as unrecorded
+    if (low in NON_SOURCE or low in {"source", "date completed", "introducer/source"}
+            or re.fullmatch(r"[\d/.\-]+", s)):
+        return "Not recorded"
     if re.search(r"personal refer", low):
         return "Personal Referral"
     if re.search(r"professional refer", low):
