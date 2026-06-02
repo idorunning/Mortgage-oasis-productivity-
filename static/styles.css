@@ -89,6 +89,35 @@ svg text{fill:var(--mut);font-size:11px}
 /* meters */
 .meter{height:9px;background:var(--card2);border-radius:6px;overflow:hidden}
 .meter > i{display:block;height:100%;background:linear-gradient(90deg,var(--acc),var(--acc2))}
+.meter > i.warn{background:linear-gradient(90deg,var(--warn),var(--bad))}
+
+/* segmented control */
+.seg{display:inline-flex;background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:3px;gap:2px}
+.seg button{background:transparent;border:0;color:var(--mut);padding:6px 12px;border-radius:8px;cursor:pointer;font-weight:600;font-size:12.5px}
+.seg button.active{background:var(--acc);color:#04121f}
+.seg button:hover:not(.active){color:var(--ink)}
+
+/* chips */
+.chips{display:flex;gap:8px;flex-wrap:wrap}
+.chip{background:var(--card2);border:1px solid var(--line);color:var(--mut);padding:6px 12px;border-radius:20px;cursor:pointer;font-size:12.5px;font-weight:600}
+.chip.on{background:rgba(61,169,252,.16);border-color:var(--acc);color:#cfe8ff}
+
+/* development cards */
+.card.dev .opp{border-top:1px solid var(--line);padding:10px 0}
+.card.dev .opp:first-of-type{border-top:0}
+.opp-h{display:flex;align-items:center;font-weight:600;font-size:13px;margin-bottom:6px}
+.opp-h .vs{color:var(--mut);font-size:12px;font-weight:500;font-variant-numeric:tabular-nums}
+.opp-a{color:var(--acc2);font-size:12.5px;margin-top:6px}
+.opp-a::before{content:"➜ "}
+td.best{color:#cfe8ff;font-weight:700;background:rgba(61,169,252,.12)}
+
+/* hero headline */
+.hero{background:linear-gradient(120deg,rgba(61,169,252,.16),rgba(34,211,166,.10));border:1px solid var(--line);
+  border-radius:var(--r);padding:18px 20px;margin:6px 0 16px;display:flex;gap:20px;align-items:center;flex-wrap:wrap}
+.hero .big{font-size:30px;font-weight:800;letter-spacing:-.5px}
+.hero .lab{color:var(--mut);font-size:12px;text-transform:uppercase;letter-spacing:.05em}
+.hero .detail{flex:1;min-width:240px;color:var(--ink);font-size:13.5px}
+.hero .act{color:var(--acc2);font-size:12.5px;margin-top:6px}
 .score{font-size:40px;font-weight:800}
 .error{background:rgba(248,113,113,.12);border:1px solid var(--bad);color:#ffd7d7;padding:14px 16px;border-radius:12px;margin-top:20px}
 .loading{padding:60px;text-align:center;color:var(--mut)}

@@ -24,3 +24,7 @@ __pycache__/
 *.cache
 .venv/
 venv/
+
+# Node (only used for headless render tests)
+node_modules/
+package-lock.json

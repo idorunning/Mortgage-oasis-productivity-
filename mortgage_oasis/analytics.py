@@ -17,12 +17,14 @@ import re
 import csv
 import json
 import datetime
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 # Review the client this many months after completion (2yr product, engage ~3mo early)
 TERM_MONTHS = 21
 # Typical typical UK protection attach band, for benchmarking the insight cards.
 ATTACH_BENCHMARK = (0.40, 0.60)
+# Months of no activity before an adviser is flagged a likely leaver / dormant.
+DORMANT_MONTHS = 6
 
 LENDERS = {
     "nationwide", "halifax", "barclays", "natwest", "hsbc", "leeds", "santander",
@@ -447,10 +449,12 @@ def build_charts(recs):
 
 
 def build_adviser_performance(recs):
+    """Per-adviser core metrics plus a monthly activity series aligned to a shared
+    month axis (for sparklines, trends and leaver detection)."""
     advisers = defaultdict(lambda: {
         "cases": 0, "mortgage": 0, "protection": 0, "mcr": 0,
-        "comm_written": 0.0, "comm_received": 0.0,
-        "completed": 0, "retentions": []})
+        "comm_written": 0.0, "comm_received": 0.0, "fee_sum": 0.0, "fee_n": 0,
+        "completed": 0, "retentions": [], "months": defaultdict(int)})
     for r in recs:
         name = r["admin"]
         if not name:
@@ -462,15 +466,22 @@ def build_adviser_performance(recs):
         a["mcr"] += 1 if r["is_mcr"] else 0
         a["comm_written"] += r["comm_written"] or 0
         a["comm_received"] += r["comm_received"] or 0
+        if r["fee"]:
+            a["fee_sum"] += r["fee"]
+            a["fee_n"] += 1
         if r["is_mortgage"] and r["comm_received"]:
             a["completed"] += 1
         if r["comm_written"] and r["comm_received"]:
             a["retentions"].append(r["comm_received"] / r["comm_written"])
+        if r["month"]:
+            a["months"][r["month"]] += 1
+    months_axis = sorted({r["month"] for r in recs if r["month"]})
     out = []
     for name, a in advisers.items():
         if a["cases"] < 3:
             continue
         ret = a["retentions"]
+        active = sorted(a["months"])
         out.append({
             "adviser": name,
             "cases": a["cases"],
@@ -480,12 +491,86 @@ def build_adviser_performance(recs):
             "comm_written": round(a["comm_written"]),
             "comm_received": round(a["comm_received"]),
             "avg_comm": round(a["comm_written"] / a["cases"]) if a["cases"] else 0,
+            "avg_fee": round(a["fee_sum"] / a["fee_n"]) if a["fee_n"] else 0,
             "protection_ratio": round(100 * a["protection"] / a["mortgage"]) if a["mortgage"] else 0,
             "conversion": round(100 * a["completed"] / a["mortgage"]) if a["mortgage"] else 0,
             "retention": round(100 * sum(ret) / len(ret)) if ret else 0,
+            "first_active": active[0] if active else "",
+            "last_active": active[-1] if active else "",
+            "active_months": len(active),
+            "monthly": [a["months"].get(m, 0) for m in months_axis],
         })
     out.sort(key=lambda x: x["comm_written"], reverse=True)
-    return out
+    return out, months_axis
+
+
+def _median(vals):
+    vals = sorted(v for v in vals if v is not None)
+    if not vals:
+        return 0
+    n = len(vals)
+    return vals[n // 2] if n % 2 else round((vals[n // 2 - 1] + vals[n // 2]) / 2)
+
+
+def _month_diff(a, b):
+    """Whole months from a to b ('YYYY-MM' strings)."""
+    if not a or not b:
+        return 0
+    ya, ma = int(a[:4]), int(a[5:7])
+    yb, mb = int(b[:4]), int(b[5:7])
+    return (yb - ya) * 12 + (mb - ma)
+
+
+# metric -> (friendly label, higher_is_better, coaching action when below benchmark)
+_DEV_METRICS = {
+    "protection_ratio": ("Protection attach", "Protection coaching — make a protection conversation standard on every mortgage case."),
+    "conversion": ("Completion rate", "Pipeline review — applications aren't reaching completion; check process & follow-up."),
+    "retention": ("Commission retention", "Reconciliation check — written vs received commission is leaking (clawbacks / chasing)."),
+    "avg_fee": ("Average broker fee", "Pricing review — fees are below the team norm for the work done."),
+    "avg_comm": ("Commission per case", "Case-mix review — steer toward higher-value cases / cross-sell."),
+}
+
+
+def build_team(advisers, months_axis, protection_gap, life_only, pipeline, opportunity):
+    """Team benchmarks, per-adviser outstanding 'book' (for handover), status
+    (active / new / dormant=likely leaver) and development opportunities."""
+    bench = {m: _median([a[m] for a in advisers])
+             for m in ("cases", "comm_written", "avg_comm", "avg_fee",
+                       "protection_ratio", "conversion", "retention")}
+    gap_by = Counter(g["admin"] for g in protection_gap if g["admin"])
+    life_by = Counter(l["admin"] for l in life_only if l["admin"])
+    pipe_due_by = Counter(p["admin"] for p in pipeline if p["admin"]
+                          and (p["overdue"] or 0 <= p["days_to_review"] <= 180))
+    avg_prot = opportunity["avg_protection_comm"]
+    avg_fee_remo = opportunity["avg_remo_fee"]
+    max_month = months_axis[-1] if months_axis else ""
+
+    for a in advisers:
+        name = a["adviser"]
+        a["gap_clients"] = gap_by.get(name, 0)
+        a["life_only_clients"] = life_by.get(name, 0)
+        a["pipeline_due"] = pipe_due_by.get(name, 0)
+        a["book_value"] = a["gap_clients"] * avg_prot + a["pipeline_due"] * avg_fee_remo
+        idle = _month_diff(a["last_active"], max_month)
+        a["idle_months"] = idle
+        if idle >= DORMANT_MONTHS:
+            a["status"] = "dormant"          # likely leaver / inactive
+        elif _month_diff(a["first_active"], max_month) < DORMANT_MONTHS:
+            a["status"] = "new"
+        else:
+            a["status"] = "active"
+        opps = []
+        for metric, (label, action) in _DEV_METRICS.items():
+            val, ref = a[metric], bench[metric]
+            if ref and val < ref * 0.85:        # meaningfully below the team median
+                opps.append({"metric": metric, "label": label, "value": val,
+                             "benchmark": ref, "gap": round(ref - val), "action": action})
+        opps.sort(key=lambda o: o["benchmark"] - o["value"], reverse=True)
+        a["opportunities"] = opps
+
+    dormant = [a["adviser"] for a in advisers if a["status"] == "dormant"]
+    return {"benchmarks": bench, "months": months_axis, "max_month": max_month,
+            "dormant": dormant, "team_size": len(advisers)}
 
 
 def build_pipeline_buckets(pipeline):
@@ -658,10 +743,11 @@ def analyse(raw_rows):
     cleanup, variant_count = build_cleanup(recs)
     kpis = build_kpis(recs, protection_gap)
     charts = build_charts(recs)
-    adviser = build_adviser_performance(recs)
+    adviser, adviser_months = build_adviser_performance(recs)
     pipeline_buckets = build_pipeline_buckets(pipeline)
     concentration = build_concentration(recs)
     opportunity = opportunity_sizing(recs, protection_gap, life_only, pipeline)
+    team = build_team(adviser, adviser_months, protection_gap, life_only, pipeline, opportunity)
     quality = data_quality_score(recs, variant_count, kpis)
     insights = build_insights(kpis, opportunity, concentration, referrals, quality, pipeline)
 
@@ -685,6 +771,7 @@ def analyse(raw_rows):
         "cleanup": cleanup,
         "cleanup_variant_count": variant_count,
         "adviser": adviser,
+        "team": team,
         "charts": charts,
         "records": _export_records(recs),
         "filters": {"years": years, "advisers": advisers, "biz_types": biz_types},
