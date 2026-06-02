@@ -26,6 +26,7 @@ except ImportError:  # dotenv is optional
 
 from mortgage_oasis import analytics
 from mortgage_oasis import datasource
+from mortgage_oasis import combined
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 
@@ -38,8 +39,10 @@ def get_analysis(force=False):
     if not force and _CACHE["data"] and now - _CACHE["ts"] < CACHE_TTL:
         return _CACHE["data"]
     rows = datasource.load_rows()
-    data = analytics.analyse(rows)
+    data = combined.analyse_all(rows, os.environ.get("ACRE_DIR", "acre_reports"))
     data["source"] = datasource.describe_source()
+    if data.get("acre"):
+        data["source"] += f" + Acre CRM ({data['acre']['kpis']['cases']} cases)"
     _CACHE.update(data=data, ts=now, error=None)
     return data
 

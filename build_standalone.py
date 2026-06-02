@@ -18,14 +18,18 @@ import datetime
 import json
 import pathlib
 
-from mortgage_oasis import analytics
+from mortgage_oasis import analytics, combined
 
 STATIC = pathlib.Path(__file__).parent / "static"
+ACRE_DIR = str(pathlib.Path(__file__).parent / "acre_reports")
 
 
 def build(rows, out_path):
-    data = analytics.analyse(rows)
-    data["source"] = "Offline snapshot · " + datetime.datetime.now().strftime("%d %b %Y %H:%M")
+    data = combined.analyse_all(rows, ACRE_DIR)
+    src = "Offline snapshot · " + datetime.datetime.now().strftime("%d %b %Y %H:%M")
+    if data.get("acre"):
+        src += f" · Acre CRM {data['acre']['kpis']['cases']} cases"
+    data["source"] = src
 
     css = (STATIC / "styles.css").read_text(encoding="utf-8")
     charts = (STATIC / "charts.js").read_text(encoding="utf-8")

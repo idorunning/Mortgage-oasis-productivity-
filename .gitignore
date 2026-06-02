@@ -28,3 +28,7 @@ venv/
 # Node (only used for headless render tests)
 node_modules/
 package-lock.json
+
+# Acre CRM exports (client PII) and reference dashboard
+acre_reports/
+mortgage_oasis_dashboard.html

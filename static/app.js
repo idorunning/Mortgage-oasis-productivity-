@@ -70,7 +70,7 @@ const Settings = (() => {
   const KEY = "mo_settings_v1";
   let s = {};
   try { s = JSON.parse(localStorage.getItem(KEY)) || {}; } catch (e) { s = {}; }
-  function ensure() { s.staff = s.staff || {}; s.reassign = s.reassign || {}; }
+  function ensure() { s.staff = s.staff || {}; s.reassign = s.reassign || {}; s.matches = s.matches || {}; }
   function save() { ensure(); try { localStorage.setItem(KEY, JSON.stringify(s)); } catch (e) {} }
   ensure();
   return {
@@ -79,6 +79,8 @@ const Settings = (() => {
     setStaff(n, patch) { ensure(); s.staff[n] = Object.assign(this.staff(n), patch); save(); },
     reassignOf(id) { ensure(); return s.reassign[id]; },
     setReassign(id, to) { ensure(); if (to) s.reassign[id] = to; else delete s.reassign[id]; save(); },
+    matchOf(id) { ensure(); return s.matches[id]; },
+    setMatch(id, decision) { ensure(); if (decision) s.matches[id] = decision; else delete s.matches[id]; save(); },
     exportJSON() { ensure(); return JSON.stringify(s, null, 2); },
     importJSON(obj) { s = obj || {}; ensure(); save(); },
   };
@@ -224,6 +226,19 @@ function kpiRow() {
 }
 
 function pageOverview(v) {
+  if (DATA.acre) {
+    const k = DATA.acre.kpis, rr = DATA.acre.rate_reviews;
+    v.appendChild(h("div", { class: "section-title" }, "🛰️ Acre CRM — live business picture"));
+    v.appendChild(h("div", { class: "kpis" },
+      kcard(num(k.cases), "CRM cases"),
+      kcard(k.completion_rate + "%", "Completion rate"),
+      kcard(k.attach_rate + "%", "Protection attach"),
+      kcard(gbp(k.proc_fees), "Proc fees"),
+      kcard(gbp(k.broker_fees), "Broker fees"),
+      kcard(rr.upcoming_6m, "Rate reviews due (6m)"),
+      kcard(DATA.acre.protection.cross_sell.length, "Protection-gap clients"),
+      kcard(DATA.matches.length, "Sheet↔CRM matches")));
+  }
   const top = DATA.insights[0];
   if (top) v.appendChild(h("div", { class: "hero" },
     h("div", {}, h("div", { class: "lab" }, "Biggest opportunity"), h("div", { class: "big" }, top.metric)),
@@ -582,9 +597,203 @@ function pageQuality(v) {
 function kcard(n, label) { return h("div", { class: "kpi" }, h("div", { class: "n" }, String(n)), h("div", { class: "l" }, label)); }
 function metricCard(label, big, hint) { const c = card(label, hint); c.appendChild(h("div", { class: "score" }, big)); return c; }
 
+/* ===== CRM (Acre) views ===== */
+function needAcre(v) { v.appendChild(h("div", { class: "error" }, h("strong", {}, "No Acre CRM data loaded. "), "Drop the report CSVs into acre_reports/ (server) or ask for a rebuilt offline file.")); }
+
+function pageCrmPipeline(v) {
+  if (!DATA.acre) return needAcre(v);
+  const p = DATA.acre.pipeline, k = DATA.acre.kpis;
+  v.appendChild(h("div", { class: "kpis" },
+    kcard(num(k.cases), "Cases"), kcard(num(k.completed), "Completed"),
+    kcard(num(k.not_proceeding), "Not proceeding"), kcard(num(k.in_progress), "In progress"),
+    kcard(k.completion_rate + "%", "Completion rate"), kcard(p.rollbacks, "Rollbacks")));
+  const g = h("div", { class: "grid cols-2" });
+  g.appendChild(chartCard("Pipeline funnel", "Live case stages", box => Charts.hbars(box, p.funnel)));
+  g.appendChild(chartCard("Cases by status", null, box => Charts.donut(box, p.status, { centerLabel: "cases" })));
+  g.appendChild(chartCard("Why cases don't proceed", "Biggest leakage first", box => Charts.hbars(box, p.not_proceeding_reasons, { color: C.coral })));
+  g.appendChild(chartCard("Cases by type", null, box => Charts.donut(box, p.by_type, { centerLabel: "cases" })));
+  v.appendChild(g);
+}
+
+function pageRates(v) {
+  if (!DATA.acre) return needAcre(v);
+  const rr = DATA.acre.rate_reviews;
+  v.appendChild(h("div", { class: "kpis" },
+    kcard(rr.rows.length, "Rate reviews tracked"),
+    kcard(rr.upcoming_6m, "Due next 6 months"),
+    kcard(rr.overdue, "Overdue"),
+    kcard((rr.reminder_status.find(x => x.label === "None") || {}).value || 0, "No reminder set")));
+  v.appendChild(h("div", { class: "section-title" }, "🔔 Real rate-end dates (from Acre — no estimation)"));
+  const g = h("div", { class: "grid cols-2" });
+  g.appendChild(chartCard("Maturities by month", "Coral = overdue", box => {
+    const today = new Date().toISOString().slice(0, 7);
+    Charts.vbars(box, rr.buckets.map(b => ({ label: b.label, value: b.value, color: b.label < today ? C.coral : C.teal })), { rotate: true, labelEvery: 2 });
+  }));
+  g.appendChild(chartCard("Reminder status", null, box => Charts.donut(box, rr.reminder_status, { centerLabel: "reviews" })));
+  v.appendChild(g);
+  const c = card("Rate reviews", "Sorted by rate-end date. Export upcoming as calendar reminders.");
+  c.appendChild(dataTable(rr.rows, [
+    { key: "end_date", label: "Rate ends", cls: "nowrap", fmt: (v, r) => v + (r.days != null && r.days < 0 ? " ⚠" : "") },
+    { key: "lender", label: "Lender" }, { key: "adviser", label: "Adviser" },
+    { key: "status", label: "Status" }, { key: "reminder", label: "Reminder" },
+    { key: "days", label: "Days", cls: "amt" },
+  ], { sortKey: "end_date", sortDir: 1, maxRows: 1000, buttons: [
+    { label: "⬇ Download due-6m (.ics)", onClick: () => icsDownload(rr.rows.filter(r => r.days != null && r.days >= 0 && r.days <= 180).map(r => ["Rate review — " + r.lender + " (" + r.adviser + ")", r.end_date, "Rate ends " + r.end_date + " · " + r.status]), "rate-reviews") },
+  ] }));
+  v.appendChild(c);
+}
+
+function pageCrmProtection(v) {
+  if (!DATA.acre) return needAcre(v);
+  const pr = DATA.acre.protection;
+  v.appendChild(h("div", { class: "kpis" },
+    kcard(pr.attach_rate + "%", "Protection attach"), kcard(pr.gi_rate + "%", "GI attach"),
+    kcard(pr.hp_policies, "Protection policies"), kcard(pr.cross_sell.length, "Mortgage clients, no policy"),
+    kcard(gbp(pr.prot_comm_monthly), "Monthly protection comm")));
+  v.appendChild(chartCard("Combined protection coverage", null, box => Charts.donut(box,
+    [{ label: "With protection", value: pr.with_protection }, { label: "Without", value: pr.without_protection }], { centerLabel: "cases" })));
+  const c = card("Protection cross-sell — completed mortgage clients with no policy on file", "Real gap from the Health & Protection report. Largest loans first.");
+  c.appendChild(dataTable(pr.cross_sell, [
+    { key: "client", label: "Client" }, { key: "adviser", label: "Adviser" },
+    { key: "ctype", label: "Type" }, { key: "amount", label: "Loan", cls: "amt", fmt: gbp },
+    { key: "completion", label: "Completed", cls: "nowrap" }, { key: "postcode", label: "Area" },
+    { key: "cal", label: "", html: true, get: () => "", fmt: (_, r) => `<a target="_blank" href="${gcalLink("Protection review: " + r.client, DATA.generated.slice(0, 10), "Mortgage client with no protection policy — " + r.ctype)}">＋ add</a>` },
+  ], { sortKey: "amount", sortDir: -1, maxRows: 1000, buttons: [
+    { label: "⬇ Download shown (.ics)", onClick: rows => icsDownload(rows.map(r => ["Protection review: " + r.client, DATA.generated.slice(0, 10), "No protection policy — " + r.ctype]), "protection-cross-sell") },
+  ] }));
+  v.appendChild(c);
+}
+
+function pageRevenue(v) {
+  if (!DATA.acre) return needAcre(v);
+  const rv = DATA.acre.revenue, k = DATA.acre.kpis;
+  v.appendChild(h("div", { class: "kpis" },
+    kcard(gbp(k.proc_fees), "Mortgage proc fees"), kcard(gbp(k.broker_fees), "Broker / case fees"),
+    kcard(gbp(rv.referral_total), "Referral fees"), kcard(gbp(rv.clawbacks_total), "Clawbacks")));
+  const g = h("div", { class: "grid cols-2" });
+  g.appendChild(chartCard("Proc fees by adviser", null, box => Charts.hbars(box, rv.advisers.map(a => ({ label: a.adviser, value: a.proc_fees })), { money: true, color: C.teal })));
+  g.appendChild(chartCard("Completed proc fees by month", null, box =>
+    Charts.line(box, [{ name: "Proc fees", points: rv.monthly.map(m => m.proc) }], { labels: rv.monthly.map(m => m.month), money: true })));
+  v.appendChild(g);
+  const c = card("Per-adviser revenue", "From the Acre Pipeline Summary report.");
+  c.appendChild(dataTable(rv.advisers, [
+    { key: "adviser", label: "Adviser" },
+    { key: "mortgages", label: "Mortgages", cls: "amt" }, { key: "completed_mortgages", label: "Completed", cls: "amt" },
+    { key: "proc_fees", label: "Proc fees", cls: "amt", fmt: gbp },
+    { key: "protection_fees", label: "Protection", cls: "amt", fmt: gbp },
+    { key: "gi_fees", label: "GI", cls: "amt", fmt: gbp },
+    { key: "clawbacks", label: "Clawbacks", cls: "amt", fmt: gbp },
+  ], { sortKey: "proc_fees", sortDir: -1, search: false }));
+  v.appendChild(c);
+}
+
+function pagePerformance(v) {
+  if (!DATA.acre) return needAcre(v);
+  const pr = DATA.acre.processing;
+  v.appendChild(h("div", { class: "section-title" }, "⏱️ Average processing times (days), per adviser"));
+  v.appendChild(chartCard("Days to completion", null, box => Charts.hbars(box, pr.map(a => ({ label: a.adviser, value: a.complete || 0 })), { color: C.teal })));
+  const c = card("Processing times", "Average days between case milestones (Acre ACR-001).");
+  c.appendChild(dataTable(pr, [
+    { key: "adviser", label: "Adviser" },
+    { key: "rec", label: "→ Recommendation", cls: "amt" }, { key: "app", label: "→ Application", cls: "amt" },
+    { key: "offer", label: "→ Offer", cls: "amt" }, { key: "complete", label: "→ Complete", cls: "amt" },
+  ], { sortKey: "complete", sortDir: 1, search: false }));
+  v.appendChild(c);
+}
+
+function pageLenders(v) {
+  if (!DATA.acre) return needAcre(v);
+  const ln = DATA.acre.lenders;
+  v.appendChild(chartCard("Top lenders by case volume", null, box => Charts.hbars(box, ln.slice(0, 12).map(l => ({ label: l.lender, value: l.cases })))));
+  const c = card("Lender book", "Volume, lending and proc fees by lender (Acre Lender Position).");
+  c.appendChild(dataTable(ln, [
+    { key: "lender", label: "Lender" }, { key: "cases", label: "Cases", cls: "amt" },
+    { key: "amount", label: "Lending", cls: "amt", fmt: gbp }, { key: "proc", label: "Proc fees", cls: "amt", fmt: gbp },
+  ], { sortKey: "cases", sortDir: -1 }));
+  v.appendChild(c);
+}
+
+function pageIntroducers(v) {
+  if (!DATA.acre) return needAcre(v);
+  const ic = DATA.acre.introducers;
+  v.appendChild(h("div", { class: "section-title" }, "🤝 Introducer leads (Acre)"));
+  if (!ic.length) v.appendChild(h("div", { class: "note muted" }, "Acre has almost no introducer attribution recorded — the Sheet ‘Referrals’ tab has more. Worth capturing introducer on every Acre case."));
+  else v.appendChild(chartCard("Leads by introducer", null, box => Charts.hbars(box, ic)));
+}
+
+function pageCompliance(v) {
+  if (!DATA.acre) return needAcre(v);
+  const cm = DATA.acre.compliance;
+  v.appendChild(h("div", { class: "kpis" },
+    kcard(cm.flagged, "Flagged cases"), kcard(cm.reviewed, "Reviewed"),
+    kcard(cm.passed, "Review passed"), kcard(cm.outstanding, "Outstanding reviews")));
+  v.appendChild(chartCard("High-risk flag types", null, box => Charts.hbars(box, cm.flag_types, { color: C.sand })));
+}
+
+/* ===== Sheet <-> CRM match review ===== */
+const matchKey = m => m.sheet.client + "|" + m.acre.case_id;
+function pageMatches(v) {
+  if (!DATA.matches.length) { v.appendChild(h("div", { class: "note muted" }, "No proposed matches (load both the Sheet and Acre data).")); return; }
+  let acc = 0, rej = 0;
+  DATA.matches.forEach(m => { const d = Settings.matchOf(matchKey(m)); if (d === "accept") acc++; else if (d === "reject") rej++; });
+  v.appendChild(h("div", { class: "section-title" }, "🔗 Match review — confirm which Sheet cases are the same client as an Acre case"));
+  v.appendChild(h("div", { class: "kpis" },
+    kcard(DATA.matches.length, "Proposed"), kcard(acc, "Confirmed"),
+    kcard(rej, "Rejected"), kcard(DATA.matches.length - acc - rej, "Pending")));
+  const decision = m => { const d = Settings.matchOf(matchKey(m)); const w = h("div", { class: "nowrap" });
+    const mk = (lab, val, cls) => h("button", { class: "btn " + cls, style: "padding:4px 9px;margin-right:5px", onclick: () => { Settings.setMatch(matchKey(m), d === val ? "" : val); renderRoute(); } }, lab);
+    w.append(mk("✓", "accept", d === "accept" ? "" : "sec"), mk("✗", "reject", d === "reject" ? "" : "sec"));
+    return w; };
+  const c = card("Proposed matches", "Score 1.0 = exact name + loan. Confirm (✓) or reject (✗); decisions save on this device.");
+  c.appendChild(dataTable(DATA.matches, [
+    { key: "score", label: "Score", cls: "amt", fmt: v => v.toFixed(2) },
+    { key: "sclient", label: "Sheet client", get: m => m.sheet.client },
+    { key: "samt", label: "£", cls: "amt", get: m => m.sheet.amount, fmt: v => gbp(v) },
+    { key: "sadmin", label: "Admin", get: m => m.sheet.admin },
+    { key: "aclient", label: "Acre client", get: m => m.acre.client },
+    { key: "aamt", label: "£", cls: "amt", get: m => m.acre.amount, fmt: v => gbp(v) },
+    { key: "aadv", label: "Adviser", get: m => m.acre.adviser },
+    { key: "atype", label: "Type", get: m => m.acre.ctype },
+    { key: "decide", label: "Match?", node: decision },
+    { key: "status", label: "", get: m => Settings.matchOf(matchKey(m)) || "", fmt: v => v === "accept" ? "✓ linked" : v === "reject" ? "✗" : "" },
+  ], { sortKey: "score", sortDir: -1, maxRows: 1000 }));
+  v.appendChild(c);
+}
+
 /* ---- routing ---- */
-const ROUTES = { overview: pageOverview, pipeline: pagePipeline, people: pagePeople, crosssell: pageCrosssell, referrals: pageReferrals, explorer: pageExplorer, quality: pageQuality };
-const TITLES = { overview: "Overview", pipeline: "Pipeline", people: "People", crosssell: "Cross-sell", referrals: "Referrals", explorer: "Explorer", quality: "Data quality" };
+const ROUTES = {
+  overview: pageOverview, people: pagePeople,
+  "crm-pipeline": pageCrmPipeline, "crm-rates": pageRates, "crm-protection": pageCrmProtection,
+  "crm-revenue": pageRevenue, "crm-performance": pagePerformance, "crm-lenders": pageLenders,
+  "crm-introducers": pageIntroducers, "crm-compliance": pageCompliance,
+  pipeline: pagePipeline, crosssell: pageCrosssell, referrals: pageReferrals,
+  explorer: pageExplorer, quality: pageQuality, matches: pageMatches,
+};
+const TITLES = {
+  overview: "Overview", people: "People",
+  "crm-pipeline": "Pipeline & funnel", "crm-rates": "Rate reviews", "crm-protection": "Protection gap",
+  "crm-revenue": "Revenue", "crm-performance": "Performance", "crm-lenders": "Lenders",
+  "crm-introducers": "Introducers", "crm-compliance": "Compliance",
+  pipeline: "Sheet pipeline", crosssell: "Sheet cross-sell", referrals: "Referrals",
+  explorer: "Explorer", quality: "Data quality", matches: "Match review",
+};
+const NAV = [
+  ["", [["overview", "📊 Overview"], ["people", "👥 People"]]],
+  ["CRM — Acre", [["crm-pipeline", "🛒 Pipeline & funnel"], ["crm-rates", "🔔 Rate reviews"],
+    ["crm-protection", "🛡️ Protection gap"], ["crm-revenue", "💷 Revenue"],
+    ["crm-performance", "⏱️ Performance"], ["crm-lenders", "🏦 Lenders"],
+    ["crm-introducers", "🤝 Introducers"], ["crm-compliance", "✅ Compliance"]]],
+  ["Case log — Sheet", [["pipeline", "📅 Sheet pipeline"], ["crosssell", "🎯 Sheet cross-sell"],
+    ["referrals", "🔗 Referrals"], ["explorer", "🔎 Explorer"], ["quality", "🧹 Data quality"]]],
+  ["Data", [["matches", "🔗 Match review"]]],
+];
+function buildNav() {
+  const nav = $("#nav"); nav.innerHTML = "";
+  NAV.forEach(([grp, items]) => {
+    if (grp) nav.appendChild(h("div", { class: "grp" }, grp));
+    items.forEach(([route, label]) => nav.appendChild(h("a", { href: "#" + route, "data-route": route }, label)));
+  });
+}
 
 function go(route) { if (location.hash !== "#" + route) location.hash = route; else renderRoute(); }
 function renderRoute() {
@@ -625,6 +834,7 @@ async function load() {
 (async function init() {
   const j = await fetchData();
   if (!j.error) { DATA = j; Settings.seed(DATA.adviser); populateFilters(); }
+  buildNav();
   wireControls();
   $("#srcLine").textContent = j.error ? "data error" : `Source: ${DATA.source} · ${DATA.kpis.total_rows} cases`;
   if (j.error) { $("#view").innerHTML = `<div class="error">Could not load data — ${j.error}${j.hint ? " — " + j.hint : ""}</div>`; }

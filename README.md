@@ -44,10 +44,31 @@ The theme is a light, on-brand "oasis" pastel palette.
 - **Leaver handover** — pick a leaver/inactive person and reassign their pipeline (per row or in
   bulk); see protection-gap clients in their book and suggested people to take it on.
 
-**Where settings live:** roles, leaver flags and pipeline reassignments are saved **on the device**
-(browser `localStorage`), so they work offline and on mobile. Use **Export/Import settings** (JSON)
-on the Team tab to back them up or move them between devices. Defaults: everyone Admin, **Mel =
-Advisor**. (These are a local overlay; the source spreadsheet is never modified.)
+**Where settings live:** roles, leaver flags, pipeline reassignments and match confirmations are
+saved **on the device** (browser `localStorage`), so they work offline and on mobile. Use
+**Export/Import settings** (JSON) on the Team tab to back them up or move them between devices.
+Defaults: everyone Admin, **Mel = Advisor**. (These are a local overlay; sources are never modified.)
+
+### Acre CRM (multi-source)
+
+The dashboard also ingests **Acre CRM** report exports — the authoritative business data — alongside
+the Google-Sheet case-log. Drop the report CSVs into **`acre_reports/`** (configurable via
+`ACRE_DIR`); reports are auto-detected by filename. The app then adds a **CRM — Acre** nav group:
+
+- **Pipeline & funnel** — real case statuses, stage funnel, Not-Proceeding reasons, rollbacks.
+- **Rate reviews** — real rate-end dates + reminder status (replaces the Sheet's 21-month estimate).
+- **Protection gap** — real attach rate + completed mortgage clients with no Health & Protection
+  policy on file (the genuine cross-sell list).
+- **Revenue / Performance / Lenders / Introducers / Compliance** — per-adviser proc fees & clawbacks,
+  processing times, lender book, introducer leads, and high-risk flag review status.
+
+The **Overview** leads with the Acre KPIs; the Google-Sheet views (admin processing, BD cross-sell,
+referrals, People/staff management) sit in the **Case log — Sheet** group.
+
+**Match review:** because Acre tracks the *regulated advisers* (Mel, Victoria) and the Sheet tracks
+the *case-processing admins*, there's no shared key. The **Data → Match review** tab proposes
+Sheet↔Acre links by fuzzy name + loan + date (score 1.0 = exact), and you confirm (✓) or reject (✗)
+each — saved on the device. Refresh = drop fresh Acre CSVs and rebuild.
 
 ### Quick start
 

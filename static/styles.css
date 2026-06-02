@@ -23,7 +23,8 @@ a{color:var(--acc-ink);text-decoration:none}
 .brandimg{width:100%;border-radius:12px;display:block;margin:2px 0 18px;box-shadow:var(--shadow)}
 .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:16px;margin:4px 8px 22px;color:var(--ink)}
 .brand .logo{width:32px;height:32px;border-radius:9px;background:linear-gradient(135deg,var(--grad1),var(--grad2));display:grid;place-items:center;box-shadow:var(--shadow)}
-.nav{display:flex;flex-direction:column;gap:3px}
+.nav{display:flex;flex-direction:column;gap:2px;overflow-y:auto;max-height:calc(100vh - 150px)}
+.nav .grp{color:var(--mut);font-size:10px;text-transform:uppercase;letter-spacing:.06em;margin:13px 10px 3px;font-weight:700}
 .nav a{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;color:var(--mut);font-weight:600}
 .nav a:hover{background:var(--card2);color:var(--ink)}
 .nav a.active{background:linear-gradient(90deg,rgba(169,143,208,.20),transparent);color:var(--acc-ink);box-shadow:inset 3px 0 0 var(--purple)}
