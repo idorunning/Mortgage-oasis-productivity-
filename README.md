@@ -23,13 +23,31 @@ analytics engine and serves a visual dashboard at `http://127.0.0.1:5000`.
 
 - **Overview** — KPI hero row, a ranked **insights** feed (biggest £ opportunities first),
   and charts: product mix (donut), top lenders, commission-by-month, mortgage-vs-protection trend.
-- **Pipeline** — remortgage maturities as a month-by-month **timeline** (overdue in red) plus a
-  due-soon table with one-click calendar export.
-- **Advisers** — per-adviser cases, commission, protection ratio, completion % and commission retention.
+- **Pipeline** — remortgage maturities as a month-by-month **timeline** (overdue in coral) plus a
+  table with one-click calendar export and an **Owner** column to reassign a case to another person.
+- **People** — staff management (see below).
 - **Cross-sell** — mortgage clients with no protection (largest loans first) + life-only upsells.
 - **Referrals**, **Explorer** (filterable case browser), **Data quality** (0–100 score + fixes).
 
 Global **filters** (year / adviser / business type) and chart **drill-down** update the views live.
+The theme is a light, on-brand "oasis" pastel palette.
+
+### Staff management (People tab)
+
+- **Team** — roster with each person’s **Role** (Admin/Advisor), a **Leaver?** tick-box (+ leave
+  month), an activity sparkline, status, productivity metrics and their **open book** (£ of
+  unworked protection-gap + due remortgages). A volume-vs-completion quadrant highlights coaching
+  vs growth candidates.
+- **Compare** — pick up to four people for a radar + side-by-side table.
+- **Develop** — coaching cards for anyone below the median **for their role** (leavers excluded),
+  each with a suggested action; plus a "potential mentors" list.
+- **Leaver handover** — pick a leaver/inactive person and reassign their pipeline (per row or in
+  bulk); see protection-gap clients in their book and suggested people to take it on.
+
+**Where settings live:** roles, leaver flags and pipeline reassignments are saved **on the device**
+(browser `localStorage`), so they work offline and on mobile. Use **Export/Import settings** (JSON)
+on the Team tab to back them up or move them between devices. Defaults: everyone Admin, **Mel =
+Advisor**. (These are a local overlay; the source spreadsheet is never modified.)
 
 ### Quick start
 

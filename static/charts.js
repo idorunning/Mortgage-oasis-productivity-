@@ -2,8 +2,9 @@
    Each function clears `el` and renders. Tooltips use native <title>. */
 (function (global) {
   const NS = "http://www.w3.org/2000/svg";
-  const PALETTE = ["#3da9fc", "#22d3a6", "#fbbf24", "#f87171", "#a78bfa",
-    "#f472b6", "#34d399", "#60a5fa", "#fb923c", "#2dd4bf", "#c084fc", "#94a3b8"];
+  const PALETTE = ["#5FB7AE", "#8FCBA9", "#8FBCE0", "#E6C98A", "#B6A8DE",
+    "#EE9A8C", "#7FC8C0", "#A8D5BA", "#9DC3E6", "#E0B45F", "#C9B6E6", "#9AA7AE"];
+  const GRID = "#E2EAE8", AXIS = "#6B7C86", LABEL = "#27353C", STROKE = "#FFFFFF";
 
   const el = (n, a) => { const e = document.createElementNS(NS, n); for (const k in (a || {})) e.setAttribute(k, a[k]); return e; };
   const txt = (s) => document.createTextNode(s == null ? "" : String(s));
@@ -37,13 +38,13 @@
       const big = frac > 0.5 ? 1 : 0;
       const p = el("path", {
         d: `M${cx + r * Math.cos(ang)},${cy + r * Math.sin(ang)} A${r},${r} 0 ${big} 1 ${cx + r * Math.cos(a2)},${cy + r * Math.sin(a2)} L${cx + ir * Math.cos(a2)},${cy + ir * Math.sin(a2)} A${ir},${ir} 0 ${big} 0 ${cx + ir * Math.cos(ang)},${cy + ir * Math.sin(ang)} Z`,
-        fill: PALETTE[i % PALETTE.length], stroke: "#16202e", "stroke-width": 1
+        fill: PALETTE[i % PALETTE.length], stroke: "#FFFFFF", "stroke-width": 1
       });
       tip(p, `${d.label}: ${d.value} (${Math.round(frac * 100)}%)`);
       if (opts.onClick) { p.style.cursor = "pointer"; p.addEventListener("click", () => opts.onClick(d)); }
       s.appendChild(p); ang = a2;
     });
-    const c1 = el("text", { x: cx, y: cy - 2, "text-anchor": "middle", "font-size": 22, fill: "#e8eef6", "font-weight": 700 });
+    const c1 = el("text", { x: cx, y: cy - 2, "text-anchor": "middle", "font-size": 22, fill: "#27353C", "font-weight": 700 });
     c1.appendChild(txt(total)); s.appendChild(c1);
     const c2 = el("text", { x: cx, y: cy + 16, "text-anchor": "middle" }); c2.appendChild(txt(opts.centerLabel || "total")); s.appendChild(c2);
     legend(c, data.map((d, i) => ({ label: `${d.label} (${d.value})`, color: PALETTE[i % PALETTE.length] })));
@@ -99,7 +100,7 @@
     const s = svg(c, w, h);
     [0, .25, .5, .75, 1].forEach(f => {
       const y = Y(max * f);
-      s.appendChild(el("line", { x1: padL, y1: y, x2: w - padR, y2: y, stroke: "#243245", "stroke-width": 1 }));
+      s.appendChild(el("line", { x1: padL, y1: y, x2: w - padR, y2: y, stroke: "#E2EAE8", "stroke-width": 1 }));
       const t = el("text", { x: padL - 6, y: y + 3, "text-anchor": "end" }); t.appendChild(txt(opts.money ? gbp(max * f) : Math.round(max * f))); s.appendChild(t);
     });
     series.forEach((ser, si) => {
@@ -124,11 +125,11 @@
     const pt = (i, r) => [cx + R * r * Math.cos(ang(i)), cy + R * r * Math.sin(ang(i))];
     [0.25, 0.5, 0.75, 1].forEach(g => {
       const d = axes.map((_, i) => { const [x, y] = pt(i, g); return `${i ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`; }).join(" ") + "Z";
-      s.appendChild(el("path", { d, fill: "none", stroke: "#243245", "stroke-width": 1 }));
+      s.appendChild(el("path", { d, fill: "none", stroke: "#E2EAE8", "stroke-width": 1 }));
     });
     axes.forEach((ax, i) => {
       const [x, y] = pt(i, 1);
-      s.appendChild(el("line", { x1: cx, y1: cy, x2: x, y2: y, stroke: "#243245" }));
+      s.appendChild(el("line", { x1: cx, y1: cy, x2: x, y2: y, stroke: "#E2EAE8" }));
       const [lx, ly] = pt(i, 1.16);
       const t = el("text", { x: lx, y: ly + 3, "text-anchor": Math.abs(lx - cx) < 6 ? "middle" : (lx > cx ? "start" : "end"), "font-size": 10 });
       t.appendChild(txt(ax)); s.appendChild(t);
@@ -153,10 +154,10 @@
     const X = v => padL + (w - padL - padR) * v / xmax;
     const Y = v => h - padB - (h - padB - padT) * v / ymax;
     const s = svg(c, w, h);
-    if (opts.xMid != null) s.appendChild(el("line", { x1: X(opts.xMid), y1: padT, x2: X(opts.xMid), y2: h - padB, stroke: "#243245", "stroke-dasharray": "4 4" }));
-    if (opts.yMid != null) s.appendChild(el("line", { x1: padL, y1: Y(opts.yMid), x2: w - padR, y2: Y(opts.yMid), stroke: "#243245", "stroke-dasharray": "4 4" }));
-    s.appendChild(el("line", { x1: padL, y1: h - padB, x2: w - padR, y2: h - padB, stroke: "#243245" }));
-    s.appendChild(el("line", { x1: padL, y1: padT, x2: padL, y2: h - padB, stroke: "#243245" }));
+    if (opts.xMid != null) s.appendChild(el("line", { x1: X(opts.xMid), y1: padT, x2: X(opts.xMid), y2: h - padB, stroke: "#E2EAE8", "stroke-dasharray": "4 4" }));
+    if (opts.yMid != null) s.appendChild(el("line", { x1: padL, y1: Y(opts.yMid), x2: w - padR, y2: Y(opts.yMid), stroke: "#E2EAE8", "stroke-dasharray": "4 4" }));
+    s.appendChild(el("line", { x1: padL, y1: h - padB, x2: w - padR, y2: h - padB, stroke: "#E2EAE8" }));
+    s.appendChild(el("line", { x1: padL, y1: padT, x2: padL, y2: h - padB, stroke: "#E2EAE8" }));
     const xl = el("text", { x: (w + padL) / 2, y: h - 6, "text-anchor": "middle" }); xl.appendChild(txt(opts.xlabel || "")); s.appendChild(xl);
     const yl = el("text", { x: 12, y: (h - padB + padT) / 2, "text-anchor": "middle", transform: `rotate(-90 12 ${(h - padB + padT) / 2})` }); yl.appendChild(txt(opts.ylabel || "")); s.appendChild(yl);
     points.forEach((p, i) => {
@@ -166,7 +167,7 @@
       tip(cir, `${p.label}: ${opts.xlabel} ${p.x}, ${opts.ylabel} ${p.y}`);
       if (opts.onClick) { cir.style.cursor = "pointer"; cir.addEventListener("click", () => opts.onClick(p)); }
       s.appendChild(cir);
-      const t = el("text", { x: X(p.x), y: Y(p.y) - r - 3, "text-anchor": "middle", "font-size": 10, fill: "#e8eef6" }); t.appendChild(txt(p.label)); s.appendChild(t);
+      const t = el("text", { x: X(p.x), y: Y(p.y) - r - 3, "text-anchor": "middle", "font-size": 10, fill: "#27353C" }); t.appendChild(txt(p.label)); s.appendChild(t);
     });
   }
 
@@ -176,9 +177,9 @@
     const s = el("svg", { viewBox: `0 0 ${w} ${h}`, width: w, height: h, style: "vertical-align:middle" });
     if (n > 1) {
       const X = i => 2 + (w - 4) * i / (n - 1), Y = v => h - 2 - (h - 4) * v / max;
-      s.appendChild(el("path", { d: values.map((v, i) => `${i ? "L" : "M"}${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join(" "), fill: "none", stroke: opts.color || "#3da9fc", "stroke-width": 1.6 }));
+      s.appendChild(el("path", { d: values.map((v, i) => `${i ? "L" : "M"}${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join(" "), fill: "none", stroke: opts.color || "#5FB7AE", "stroke-width": 1.6 }));
       const lx = X(n - 1), ly = Y(values[n - 1]);
-      s.appendChild(el("circle", { cx: lx, cy: ly, r: 2, fill: opts.color || "#3da9fc" }));
+      s.appendChild(el("circle", { cx: lx, cy: ly, r: 2, fill: opts.color || "#5FB7AE" }));
     }
     return s;
   }

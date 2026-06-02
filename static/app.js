@@ -3,7 +3,8 @@
 let DATA = null;
 const F = { year: "", adviser: "", biz: "" };      // global filters
 let EXPLORER = {};                                  // drill-down filter (category/provider/area)
-const PEOPLE = { tab: "team", selected: new Set(), leaver: "" };  // People section state
+const PEOPLE = { tab: "team", selected: new Set(), leaver: "", roleFilter: "all" };  // People state
+const C = { teal: "#5FB7AE", sage: "#8FCBA9", blue: "#8FBCE0", sand: "#E6C98A", coral: "#EE9A8C" };
 
 const $ = (s, r = document) => r.querySelector(s);
 // Server mode fetches /api/data; offline snapshot reads window.EMBEDDED_DATA.
@@ -61,6 +62,84 @@ function countBy(rows, keyFn, top) {
   rows.forEach(r => { const k = keyFn(r); if (k) m.set(k, (m.get(k) || 0) + 1); });
   let a = [...m.entries()].map(([label, value]) => ({ label, value })).sort((x, y) => y.value - x.value);
   return top ? a.slice(0, top) : a;
+}
+
+/* ---- staff settings (on-device, localStorage) — roles, leavers, pipeline reassignment ---- */
+const Settings = (() => {
+  const KEY = "mo_settings_v1";
+  let s = {};
+  try { s = JSON.parse(localStorage.getItem(KEY)) || {}; } catch (e) { s = {}; }
+  function ensure() { s.staff = s.staff || {}; s.reassign = s.reassign || {}; }
+  function save() { ensure(); try { localStorage.setItem(KEY, JSON.stringify(s)); } catch (e) {} }
+  ensure();
+  return {
+    seed(advisers) { ensure(); let ch = false; advisers.forEach(a => { if (!s.staff[a.adviser]) { s.staff[a.adviser] = { role: a.adviser === "Mel" ? "advisor" : "admin", leaver: false, leaveDate: "" }; ch = true; } }); if (ch) save(); },
+    staff(n) { ensure(); return s.staff[n] || { role: "admin", leaver: false, leaveDate: "" }; },
+    setStaff(n, patch) { ensure(); s.staff[n] = Object.assign(this.staff(n), patch); save(); },
+    reassignOf(id) { ensure(); return s.reassign[id]; },
+    setReassign(id, to) { ensure(); if (to) s.reassign[id] = to; else delete s.reassign[id]; save(); },
+    exportJSON() { ensure(); return JSON.stringify(s, null, 2); },
+    importJSON(obj) { s = obj || {}; ensure(); save(); },
+  };
+})();
+const pipeId = p => `${p.client}|${p.completed}|${p.lender}`;
+const effectiveOwner = p => Settings.reassignOf(pipeId(p)) || p.admin;
+const staffNames = () => DATA.adviser.map(a => a.adviser);
+
+/* ---- People overlay: apply roles/leavers/reassignment over the read-only analytics ---- */
+const DEV_METRICS = {
+  protection_ratio: ["Protection attach", "Protection coaching — make a protection conversation standard on every mortgage case."],
+  conversion: ["Completion rate", "Pipeline review — applications aren't reaching completion; check process & follow-up."],
+  retention: ["Commission retention", "Reconciliation check — written vs received commission is leaking (clawbacks / chasing)."],
+  avg_fee: ["Average broker fee", "Pricing review — fees are below the team norm for the work done."],
+  avg_comm: ["Commission per case", "Case-mix review — steer toward higher-value cases / cross-sell."],
+};
+function median(vals) {
+  vals = vals.filter(v => v != null).sort((a, b) => a - b);
+  if (!vals.length) return 0;
+  const n = vals.length;
+  return n % 2 ? vals[(n - 1) / 2] : Math.round((vals[n / 2 - 1] + vals[n / 2]) / 2);
+}
+function benchmarksFor(group) {
+  const m = {};
+  ["cases", "comm_written", "avg_comm", "avg_fee", "protection_ratio", "conversion", "retention"]
+    .forEach(k => m[k] = median(group.map(a => a[k])));
+  return m;
+}
+function opportunitiesFor(a, bench) {
+  const out = [];
+  for (const k in DEV_METRICS) if (bench[k] && a[k] < bench[k] * 0.85)
+    out.push({ metric: k, label: DEV_METRICS[k][0], action: DEV_METRICS[k][1], value: a[k], benchmark: bench[k] });
+  out.sort((x, y) => (y.benchmark - y.value) - (x.benchmark - x.value));
+  return out;
+}
+function teamView() {
+  const base = DATA.adviser.map(a => {
+    const st = Settings.staff(a.adviser);
+    return Object.assign({}, a, { role: st.role, leaver: !!st.leaver, leaveDate: st.leaveDate || "",
+      status: st.leaver ? "leaver" : a.status });
+  });
+  // open book recomputed by *effective* owner so pipeline reassignment is reflected
+  const due = {}, gap = {}, life = {};
+  DATA.pipeline.forEach(p => { if (p.overdue || (p.days_to_review >= 0 && p.days_to_review <= 180)) { const o = effectiveOwner(p); due[o] = (due[o] || 0) + 1; } });
+  DATA.protection_gap.forEach(g => { if (g.admin) gap[g.admin] = (gap[g.admin] || 0) + 1; });
+  DATA.life_only.forEach(l => { if (l.admin) life[l.admin] = (life[l.admin] || 0) + 1; });
+  const avgProt = DATA.opportunity.avg_protection_comm, avgFee = DATA.opportunity.avg_remo_fee;
+  base.forEach(a => {
+    a.pipeline_due = due[a.adviser] || 0;
+    a.gap_clients = gap[a.adviser] || 0;
+    a.life_only_clients = life[a.adviser] || 0;
+    a.book_value = a.gap_clients * avgProt + a.pipeline_due * avgFee;
+  });
+  const live = base.filter(a => !a.leaver);
+  const bench = benchmarksFor(live);
+  base.forEach(a => {
+    if (a.leaver) { a.opportunities = []; return; }
+    let peers = live.filter(x => x.role === a.role);
+    if (peers.length < 3) peers = live;          // role group too small -> benchmark vs whole team
+    a.opportunities = opportunitiesFor(a, benchmarksFor(peers));
+  });
+  return { advisers: base, live, bench };
 }
 
 /* ---- generic sortable / searchable table ---- */
@@ -175,15 +254,24 @@ function pageOverview(v) {
   grid.appendChild(chartCard("Mortgage vs protection cases", "Are protection sales keeping pace?", box => {
     const m = Object.fromEntries(months.map(x => [x, 0])), p = Object.fromEntries(months.map(x => [x, 0]));
     recs.forEach(r => { if (!r.month) return; if (r.is_mortgage) m[r.month]++; if (r.is_protection) p[r.month]++; });
-    Charts.line(box, [{ name: "Mortgage", points: months.map(x => m[x]) }, { name: "Protection", points: months.map(x => p[x]), color: "#22d3a6" }], { labels: months });
+    Charts.line(box, [{ name: "Mortgage", points: months.map(x => m[x]) }, { name: "Protection", points: months.map(x => p[x]), color: C.sage }], { labels: months });
   }));
   grid.appendChild(chartCard("Geographic spread", "Cases by postcode area — click to explore", box =>
     Charts.hbars(box, countBy(recs, r => r.area, 10), { onClick: d => { EXPLORER = { key: "area", val: d.label }; go("explorer"); } })));
   v.appendChild(grid);
 }
 
+function ownerSelect(p) {
+  const cur = effectiveOwner(p);
+  const sel = h("select", { class: "mini", onchange: e => { Settings.setReassign(pipeId(p), e.target.value === p.admin ? "" : e.target.value); renderRoute(); } });
+  staffNames().forEach(n => { const o = h("option", { value: n }, n); if (n === cur) o.setAttribute("selected", ""); sel.appendChild(o); });
+  const wrap = h("div", {}, sel);
+  if (cur !== p.admin) wrap.appendChild(h("span", { class: "from" }, "from " + p.admin));
+  return wrap;
+}
+
 function pagePipeline(v) {
-  let pipe = DATA.pipeline.filter(p => !F.adviser || p.admin === F.adviser);
+  let pipe = DATA.pipeline.filter(p => !F.adviser || effectiveOwner(p) === F.adviser);
   const dueSoon = pipe.filter(p => p.overdue || (p.days_to_review >= 0 && p.days_to_review <= 90));
   v.appendChild(h("div", { class: "kpis" },
     kcard(pipe.length, "Pipeline cases"),
@@ -191,10 +279,10 @@ function pagePipeline(v) {
     kcard(gbp(DATA.opportunity.due_90_fee_value), "Est. fees due (90d)")));
 
   v.appendChild(h("div", { class: "section-title" }, "📅 Remortgage maturities by month (review = completion + " + DATA.term_months + "mo)"));
-  v.appendChild(chartCard("Pipeline timeline", "Red = overdue reviews", box => {
+  v.appendChild(chartCard("Pipeline timeline", "Coral = overdue reviews", box => {
     const m = new Map();
     pipe.forEach(p => { const k = p.review_date.slice(0, 7); const o = m.get(k) || { c: 0, o: 0 }; o.c++; if (p.overdue) o.o++; m.set(k, o); });
-    const buckets = [...m.entries()].sort().map(([month, o]) => ({ label: month, value: o.c, color: o.o ? "#f87171" : "#3da9fc", note: o.o ? o.o + " overdue" : "" }));
+    const buckets = [...m.entries()].sort().map(([month, o]) => ({ label: month, value: o.c, color: o.o ? C.coral : C.teal, note: o.o ? o.o + " overdue" : "" }));
     Charts.vbars(box, buckets, { rotate: true, labelEvery: 1 });
   }));
 
@@ -202,10 +290,11 @@ function pagePipeline(v) {
     { key: "review_date", label: "Review", cls: "nowrap", fmt: (v, r) => v + (r.overdue ? "  ⚠" : "") },
     { key: "client", label: "Client" }, { key: "lender", label: "Lender" },
     { key: "amount", label: "Loan", cls: "amt", fmt: gbp },
-    { key: "completed", label: "Completed", cls: "nowrap" }, { key: "admin", label: "Adviser" },
+    { key: "completed", label: "Completed", cls: "nowrap" },
+    { key: "owner", label: "Owner", get: r => effectiveOwner(r), node: r => ownerSelect(r) },
     { key: "cal", label: "Calendar", html: true, get: () => "", fmt: (_, r) => `<a target="_blank" href="${gcalLink("Remortgage review: " + r.client, r.review_date, "Approaching maturity — " + r.property + " (" + r.lender + ")")}">＋ add</a>` },
   ];
-  const c = card("Pipeline cases", "Sorted by review date. Bulk-export reminders below.");
+  const c = card("Pipeline cases", "Sorted by review date. Change “Owner” to reassign a case to another staff member. Bulk-export reminders below.");
   c.appendChild(dataTable(pipe, cols, {
     sortKey: "review_date", sortDir: 1, buttons: [
       { label: "⬇ Download due-soon (.ics)", onClick: () => icsDownload(dueSoon.map(p => ["Remortgage review: " + p.client, p.review_date, "Approaching maturity — " + p.property + " (" + p.lender + ")"]), "remortgage-due") },
@@ -216,87 +305,120 @@ function pagePipeline(v) {
 }
 
 /* ===== People (admin staff management) ===== */
-const STATUS = { active: ["Active", "ok"], "new": ["New", "new"], dormant: ["Likely leaver", "due"] };
-const adviserBy = name => DATA.adviser.find(a => a.adviser === name);
+let TEAM = null;  // teamView() result for the current render
+const STATUS = { active: ["Active", "active"], "new": ["New", "new"], dormant: ["Inactive 6m+", "due"], leaver: ["Left", "left"] };
+const adviserBy = name => (TEAM ? TEAM.advisers : DATA.adviser).find(a => a.adviser === name);
+const statusColor = s => (s === "leaver" || s === "dormant") ? C.coral : (s === "new" ? C.sand : C.teal);
 
-function statusBadge(s) { const [t, cls] = STATUS[s] || ["—", ""]; return h("span", { class: "tag " + cls }, t); }
+function statusBadge(a) {
+  const [t, cls] = STATUS[a.status] || ["—", ""];
+  const label = a.status === "leaver" && a.leaveDate ? t + " " + a.leaveDate : t;
+  return h("span", { class: "tag " + cls, title: a.status === "dormant" ? "No logged cases for 6+ months" : "" }, label);
+}
+function roleBadge(role) { return h("span", { class: "tag " + role }, role === "advisor" ? "Advisor" : "Admin"); }
+
+function exportSettings() {
+  const url = URL.createObjectURL(new Blob([Settings.exportJSON()], { type: "application/json" }));
+  const a = h("a", { href: url, download: "mo-staff-settings.json" }); a.click(); URL.revokeObjectURL(url);
+}
+function importSettings() {
+  const inp = h("input", { type: "file", accept: "application/json" });
+  inp.onchange = () => { const f = inp.files[0]; if (!f) return; const rd = new FileReader();
+    rd.onload = () => { try { Settings.importJSON(JSON.parse(rd.result)); renderRoute(); } catch (e) { alert("Could not read that settings file."); } };
+    rd.readAsText(f); };
+  inp.click();
+}
 
 function pagePeople(v) {
+  TEAM = teamView();
   const tabs = [["team", "Team"], ["compare", "Compare"], ["develop", "Develop"], ["handover", "Leaver handover"]];
   const seg = h("div", { class: "seg" });
   tabs.forEach(([k, label]) => seg.appendChild(h("button", {
     class: PEOPLE.tab === k ? "active" : "", onclick: () => { PEOPLE.tab = k; renderRoute(); }
   }, label)));
-  v.appendChild(h("div", { class: "section-title" }, "👥 People — admin staff performance & development", h("span", { class: "spacer" }), seg));
+  v.appendChild(h("div", { class: "section-title" }, "👥 People — staff performance & development", h("span", { class: "spacer" }), seg));
   ({ team: peopleTeam, compare: peopleCompare, develop: peopleDevelop, handover: peopleHandover }[PEOPLE.tab] || peopleTeam)(v);
 }
 
 function peopleTeam(v) {
-  const b = DATA.team.benchmarks, advisers = DATA.adviser;
-  v.appendChild(h("div", { class: "kpis" },
-    kcard(DATA.team.team_size, "Team members"),
-    kcard(DATA.team.dormant.length, "Likely leavers (inactive 6m+)"),
-    kcard(b.protection_ratio + "%", "Median protection:mortgage"),
-    kcard(b.conversion + "%", "Median completion rate")));
+  const all = TEAM.advisers, b = TEAM.bench, live = TEAM.live;
+  const rf = PEOPLE.roleFilter;
+  const shown = all.filter(a => rf === "all" ? true : rf === "live" ? !a.leaver : a.role === rf);
 
+  v.appendChild(h("div", { class: "kpis" },
+    kcard(live.length, "Current team"),
+    kcard(all.filter(a => a.leaver).length, "Marked as leavers"),
+    kcard(all.filter(a => !a.leaver && a.status === "dormant").length, "Inactive 6m+ (unmarked)"),
+    kcard(b.conversion + "%", "Median completion")));
+
+  const ctrl = h("div", { class: "toolbar" });
+  const rsel = h("select", { onchange: e => { PEOPLE.roleFilter = e.target.value; renderRoute(); } });
+  [["all", "Everyone"], ["live", "Current only"], ["admin", "Admins"], ["advisor", "Advisors"]].forEach(([val, lab]) => {
+    const o = h("option", { value: val }, lab); if (rf === val) o.setAttribute("selected", ""); rsel.appendChild(o);
+  });
+  ctrl.append(h("span", { class: "muted" }, "Show:"), rsel,
+    h("button", { class: "btn sec", onclick: () => { if (PEOPLE.selected.size < 2) return alert("Tick at least two people to compare."); PEOPLE.tab = "compare"; renderRoute(); } }, "⇄ Compare selected"),
+    h("span", { class: "spacer" }),
+    h("button", { class: "btn sec", onclick: exportSettings }, "⬇ Export settings"),
+    h("button", { class: "btn sec", onclick: importSettings }, "⬆ Import settings"));
+  v.appendChild(ctrl);
+
+  const live_shown = shown.filter(a => !a.leaver);
   v.appendChild(chartCard("Volume vs completion — bubble size = commission written",
-    "Top-left = high quality / low volume (capacity to grow); bottom-right = high volume / low completion (process coaching). Dashed lines = team median. Click a bubble to review that person.", box =>
-    Charts.scatter(box, advisers.map(a => ({
-      x: a.cases, y: a.conversion, size: a.comm_written, label: a.adviser,
-      color: a.status === "dormant" ? "#f87171" : (a.status === "new" ? "#fbbf24" : "#3da9fc")
-    })), {
-      xlabel: "Cases", ylabel: "Completion %", xMid: b.cases, yMid: b.conversion,
-      onClick: p => { PEOPLE.leaver = p.label; PEOPLE.tab = "handover"; renderRoute(); }
-    })));
+    "Top-left = high quality / lower volume (capacity to grow); bottom-right = high volume / low completion (coaching). Dashed lines = team median. Click a bubble to review that person.", box =>
+    Charts.scatter(box, live_shown.map(a => ({ x: a.cases, y: a.conversion, size: a.comm_written, label: a.adviser, color: statusColor(a.status) })),
+      { xlabel: "Cases", ylabel: "Completion %", xMid: b.cases, yMid: b.conversion, onClick: p => { PEOPLE.leaver = p.label; PEOPLE.tab = "handover"; renderRoute(); } })));
 
   const cols = [
     { key: "sel", label: "⇄", node: a => { const cb = h("input", { type: "checkbox" }); cb.checked = PEOPLE.selected.has(a.adviser); cb.onchange = () => { cb.checked ? PEOPLE.selected.add(a.adviser) : PEOPLE.selected.delete(a.adviser); }; return cb; } },
-    { key: "adviser", label: "Adviser" },
-    { key: "status", label: "Status", node: a => statusBadge(a.status) },
-    { key: "trend", label: "Activity", node: a => Charts.sparkline(a.monthly, { color: a.status === "dormant" ? "#f87171" : "#3da9fc" }) },
+    { key: "adviser", label: "Name" },
+    { key: "role", label: "Role", node: a => { const s = h("select", { class: "mini", onchange: e => { Settings.setStaff(a.adviser, { role: e.target.value }); renderRoute(); } }); ["admin", "advisor"].forEach(rv => { const o = h("option", { value: rv }, rv[0].toUpperCase() + rv.slice(1)); if (a.role === rv) o.setAttribute("selected", ""); s.appendChild(o); }); return s; } },
+    { key: "status", label: "Status", node: a => statusBadge(a) },
+    { key: "leaver", label: "Leaver?", node: a => { const w = h("div", { class: "nowrap" }); const cb = h("input", { type: "checkbox" }); cb.checked = a.leaver; cb.onchange = () => { Settings.setStaff(a.adviser, { leaver: cb.checked }); renderRoute(); }; w.appendChild(cb); if (a.leaver) { const mi = h("input", { type: "month", class: "mini", value: a.leaveDate || "" }); mi.onchange = () => Settings.setStaff(a.adviser, { leaveDate: mi.value }); w.appendChild(mi); } return w; } },
+    { key: "trend", label: "Activity", node: a => Charts.sparkline(a.monthly, { color: statusColor(a.status) }) },
     { key: "cases", label: "Cases", cls: "amt" },
     { key: "comm_written", label: "Comm", cls: "amt", fmt: gbp },
     { key: "protection_ratio", label: "Prot:Mort", cls: "amt", fmt: v => v + "%" },
     { key: "conversion", label: "Complete", cls: "amt", fmt: v => v + "%" },
-    { key: "retention", label: "Retention", cls: "amt", fmt: v => v + "%" },
     { key: "avg_fee", label: "Avg fee", cls: "amt", fmt: gbp },
     { key: "book_value", label: "Open book", cls: "amt", fmt: gbp },
-    { key: "last_active", label: "Last active", cls: "nowrap" },
   ];
-  const c = card("Team roster", "Tick rows then “Compare selected”. Completion % = mortgage cases with commission received; Open book = £ of unworked protection-gap + due remortgages held by this person.");
-  c.appendChild(dataTable(advisers, cols, {
-    sortKey: "comm_written", sortDir: -1, search: false,
-    buttons: [{ label: "⇄ Compare selected", onClick: () => { if (PEOPLE.selected.size < 2) return alert("Tick at least two people to compare."); PEOPLE.tab = "compare"; renderRoute(); } }]
-  }));
+  const c = card("Team roster", "Set each person’s Role and tick Leaver when they go. Completion % = mortgage cases with commission received; Open book = £ of unworked protection-gap + due remortgages they hold. Settings save on this device — use Export for a backup.");
+  c.appendChild(dataTable(shown, cols, { sortKey: "comm_written", sortDir: -1, search: false }));
   v.appendChild(c);
 }
 
 const RADAR_AXES = [["cases", "Volume"], ["comm_written", "Commission"], ["protection_ratio", "Protection"], ["conversion", "Completion"], ["retention", "Retention"], ["avg_fee", "Avg fee"]];
 
 function peopleCompare(v) {
+  const advisers = TEAM.advisers;
   const chips = h("div", { class: "chips" });
-  DATA.adviser.forEach(a => chips.appendChild(h("button", {
+  advisers.forEach(a => chips.appendChild(h("button", {
     class: "chip" + (PEOPLE.selected.has(a.adviser) ? " on" : ""),
     onclick: () => { PEOPLE.selected.has(a.adviser) ? PEOPLE.selected.delete(a.adviser) : (PEOPLE.selected.size < 4 && PEOPLE.selected.add(a.adviser)); renderRoute(); }
-  }, a.adviser)));
+  }, a.adviser + (a.leaver ? " (left)" : ""))));
   const cc = card("Choose up to 4 to compare", "Selection carries over from the Team roster.");
   cc.appendChild(chips); v.appendChild(cc);
 
-  const sel = DATA.adviser.filter(a => PEOPLE.selected.has(a.adviser));
+  const sel = advisers.filter(a => PEOPLE.selected.has(a.adviser));
   if (sel.length < 2) { v.appendChild(h("div", { class: "note muted" }, "Pick at least two people above to see the comparison.")); return; }
 
-  const maxes = {}; RADAR_AXES.forEach(([k]) => maxes[k] = Math.max(1, ...DATA.adviser.map(a => a[k])));
+  const maxes = {}; RADAR_AXES.forEach(([k]) => maxes[k] = Math.max(1, ...advisers.map(a => a[k])));
   const grid = h("div", { class: "grid cols-2" });
   grid.appendChild(chartCard("Performance shape (each axis scaled to team best)", null, box =>
     Charts.radar(box, RADAR_AXES.map(x => x[1]), sel.map(a => ({ name: a.adviser, values: RADAR_AXES.map(([k]) => a[k] / maxes[k]) })))));
   grid.appendChild(chartCard("Commission written", null, box =>
-    Charts.hbars(box, sel.map(a => ({ label: a.adviser, value: a.comm_written })), { money: true, color: "#22d3a6" })));
+    Charts.hbars(box, sel.map(a => ({ label: a.adviser, value: a.comm_written })), { money: true, color: C.sage })));
   v.appendChild(grid);
 
   const metrics = [["cases", "Cases", false], ["comm_written", "Commission", true], ["avg_comm", "Avg / case", true], ["avg_fee", "Avg fee", true], ["protection_ratio", "Protection:mortgage %", false], ["conversion", "Completion %", false], ["retention", "Retention %", false], ["book_value", "Open book £", true]];
   const c = card("Side-by-side", "Best in each row is highlighted. Use it for 1:1s and workload balancing.");
-  const t = h("table"); const thead = h("tr", {}, h("th", {}, "Metric")); sel.forEach(a => thead.appendChild(h("th", { class: "amt" }, a.adviser))); t.appendChild(h("thead", {}, thead));
+  const t = h("table"); const thr = h("tr", {}, h("th", {}, "Metric"));
+  sel.forEach(a => thr.appendChild(h("th", { class: "amt" }, a.adviser)));
+  t.appendChild(h("thead", {}, thr));
   const tb = h("tbody");
+  // role row
+  const rr = h("tr", {}, h("td", {}, "Role")); sel.forEach(a => rr.appendChild(h("td", { class: "amt" }, roleBadge(a.role)))); tb.appendChild(rr);
   metrics.forEach(([k, label, money]) => {
     const best = Math.max(...sel.map(a => a[k]));
     const tr = h("tr", {}, h("td", {}, label));
@@ -307,12 +429,12 @@ function peopleCompare(v) {
 }
 
 function peopleDevelop(v) {
-  const withOpps = DATA.adviser.filter(a => a.opportunities.length).sort((x, y) => y.opportunities.length - x.opportunities.length);
-  v.appendChild(h("div", { class: "section-title" }, "🎓 Development opportunities — measured against the team median"));
-  if (!withOpps.length) { v.appendChild(h("div", { class: "note muted" }, "No one is materially below the team benchmarks. 🎉")); }
+  const withOpps = TEAM.advisers.filter(a => !a.leaver && a.opportunities.length).sort((x, y) => y.opportunities.length - x.opportunities.length);
+  v.appendChild(h("div", { class: "section-title" }, "🎓 Development opportunities — vs the median for their role"));
+  if (!withOpps.length) v.appendChild(h("div", { class: "note muted" }, "No current staff are materially below their role benchmarks. 🎉"));
   const grid = h("div", { class: "grid cols-2" });
   withOpps.forEach(a => {
-    const c = h("div", { class: "card dev" }, h("h3", {}, a.adviser, " ", statusBadge(a.status)));
+    const c = h("div", { class: "card dev" }, h("h3", {}, a.adviser, " ", roleBadge(a.role), " ", statusBadge(a)));
     a.opportunities.forEach(o => c.appendChild(h("div", { class: "opp" },
       h("div", { class: "opp-h" }, o.label, h("span", { class: "spacer" }), h("span", { class: "vs" }, (o.metric.startsWith("avg") ? gbp(o.value) : o.value + "%") + " vs " + (o.metric.startsWith("avg") ? gbp(o.benchmark) : o.benchmark + "%"))),
       h("div", { class: "meter" }, h("i", { class: "warn", style: "width:" + Math.min(100, Math.round(100 * o.value / (o.benchmark || 1))) + "%" })),
@@ -321,23 +443,26 @@ function peopleDevelop(v) {
   });
   v.appendChild(grid);
 
-  const stars = DATA.adviser.filter(a => !a.opportunities.length && a.status === "active");
+  const stars = TEAM.advisers.filter(a => !a.leaver && !a.opportunities.length && a.status !== "new");
   if (stars.length) {
-    const c = card("Doing well — potential mentors", "At or above the team median across the board.");
+    const c = card("Doing well — potential mentors", "At or above their role median across the board.");
     c.appendChild(h("div", { class: "chips" }, stars.map(a => h("span", { class: "chip on" }, a.adviser))));
     v.appendChild(c);
   }
 }
 
 function peopleHandover(v) {
-  if (!PEOPLE.leaver && DATA.team.dormant.length) PEOPLE.leaver = DATA.team.dormant[0];
-  if (!PEOPLE.leaver && DATA.adviser.length) PEOPLE.leaver = DATA.adviser[0].adviser;
+  const advisers = TEAM.advisers;
+  const leavers = advisers.filter(a => a.leaver).map(a => a.adviser);
+  const dormant = advisers.filter(a => a.status === "dormant").map(a => a.adviser);
+  if (!PEOPLE.leaver || !adviserBy(PEOPLE.leaver)) PEOPLE.leaver = leavers[0] || dormant[0] || (advisers[0] && advisers[0].adviser);
   const sel = h("select", { onchange: e => { PEOPLE.leaver = e.target.value; renderRoute(); } });
-  DATA.adviser.forEach(a => { const o = h("option", { value: a.adviser }, a.adviser + (a.status === "dormant" ? " — likely leaver" : "")); if (a.adviser === PEOPLE.leaver) o.setAttribute("selected", ""); sel.appendChild(o); });
+  advisers.forEach(a => { const o = h("option", { value: a.adviser }, a.adviser + (a.leaver ? " — left" : a.status === "dormant" ? " — inactive" : "")); if (a.adviser === PEOPLE.leaver) o.setAttribute("selected", ""); sel.appendChild(o); });
   v.appendChild(h("div", { class: "section-title" }, "📦 Leaver handover — reassign an open book", h("span", { class: "spacer" }), sel));
 
   const a = adviserBy(PEOPLE.leaver); if (!a) return;
-  if (a.status === "dormant") v.appendChild(h("div", { class: "error" }, h("strong", {}, "⚠ No activity since " + a.last_active + " (" + a.idle_months + " months). "), "Their open work below needs reassigning so nothing slips."));
+  if (a.leaver) v.appendChild(h("div", { class: "error" }, h("strong", {}, "🚪 Marked as a leaver" + (a.leaveDate ? " (" + a.leaveDate + ")" : "") + ". "), "Reassign the open work below so nothing slips."));
+  else if (a.status === "dormant") v.appendChild(h("div", { class: "error" }, h("strong", {}, "⚠ No activity since " + a.last_active + " (" + a.idle_months + " months). "), "If they’ve left, tick “Leaver?” on the Team tab; meanwhile reassign their book below."));
 
   v.appendChild(h("div", { class: "kpis" },
     kcard(gbp(a.book_value), "Open book value"),
@@ -345,27 +470,34 @@ function peopleHandover(v) {
     kcard(a.gap_clients, "Protection-gap clients"),
     kcard(a.life_only_clients, "Life-only clients")));
 
-  const pipe = DATA.pipeline.filter(p => p.admin === PEOPLE.leaver && (p.overdue || (p.days_to_review >= 0 && p.days_to_review <= 180)));
-  const pc = card("Remortgage reviews to reassign", "Time-critical — these clients are approaching maturity.");
+  const pipe = DATA.pipeline.filter(p => effectiveOwner(p) === PEOPLE.leaver && (p.overdue || (p.days_to_review >= 0 && p.days_to_review <= 180)));
+  const bulk = h("div", { class: "toolbar" });
+  const bsel = h("select", { class: "mini" });
+  staffNames().filter(n => n !== PEOPLE.leaver).forEach(n => bsel.appendChild(h("option", { value: n }, n)));
+  bulk.append(h("span", { class: "muted" }, "Reassign all " + pipe.length + " shown to:"), bsel,
+    h("button", { class: "btn", onclick: () => { if (!bsel.value) return; pipe.forEach(p => Settings.setReassign(pipeId(p), bsel.value)); renderRoute(); } }, "Apply"));
+  const pc = card("Remortgage reviews to reassign", "Time-critical — these clients are approaching maturity. Change Owner per row, or bulk-reassign.");
+  pc.appendChild(bulk);
   pc.appendChild(dataTable(pipe, [
     { key: "review_date", label: "Review", cls: "nowrap", fmt: (v, r) => v + (r.overdue ? " ⚠" : "") },
     { key: "client", label: "Client" }, { key: "lender", label: "Lender" },
     { key: "amount", label: "Loan", cls: "amt", fmt: gbp },
+    { key: "owner", label: "Owner", get: r => effectiveOwner(r), node: r => ownerSelect(r) },
   ], { sortKey: "review_date", sortDir: 1, search: false, maxRows: 500 }));
   v.appendChild(pc);
 
   const gap = DATA.protection_gap.filter(g => g.admin === PEOPLE.leaver);
-  const gc = card("Protection-gap clients to reassign", "Warm cross-sell leads sitting in this book.");
+  const gc = card("Protection-gap clients in this book", "Warm cross-sell leads — hand these to whoever picks up the relationship.");
   gc.appendChild(dataTable(gap, [
     { key: "client", label: "Client" }, { key: "property", label: "Property" },
     { key: "lender", label: "Lender" }, { key: "amount", label: "Loan", cls: "amt", fmt: gbp },
   ], { sortKey: "amount", sortDir: -1, search: false, maxRows: 500 }));
   v.appendChild(gc);
 
-  const capacity = DATA.adviser.filter(x => x.status === "active" && x.adviser !== PEOPLE.leaver)
+  const capacity = TEAM.live.filter(x => x.adviser !== PEOPLE.leaver)
     .sort((x, y) => (y.conversion - y.book_value / 5000) - (x.conversion - x.book_value / 5000)).slice(0, 4);
   if (capacity.length) {
-    const c = card("Suggested reassignment", "Active people with strong completion rates and a lighter open book.");
+    const c = card("Suggested people to take it on", "Current staff with strong completion rates and a lighter open book.");
     c.appendChild(h("div", { class: "chips" }, capacity.map(x => h("span", { class: "chip on" }, x.adviser + " · " + x.conversion + "% complete · book " + gbp(x.book_value)))));
     v.appendChild(c);
   }
@@ -485,13 +617,13 @@ function wireControls() {
 async function load() {
   const j = await fetchData();
   if (j.error) { $("#view").innerHTML = ""; $("#view").appendChild(h("div", { class: "error" }, h("strong", {}, "Could not load data. "), j.error + (j.hint ? " — " + j.hint : ""))); $("#srcLine").textContent = "data error"; return; }
-  DATA = j;
+  DATA = j; Settings.seed(DATA.adviser);
   $("#srcLine").textContent = `Source: ${DATA.source} · generated ${DATA.generated.replace("T", " ")} · ${DATA.kpis.total_rows} cases`;
   renderRoute();
 }
 (async function init() {
   const j = await fetchData();
-  if (!j.error) { DATA = j; populateFilters(); }
+  if (!j.error) { DATA = j; Settings.seed(DATA.adviser); populateFilters(); }
   wireControls();
   $("#srcLine").textContent = j.error ? "data error" : `Source: ${DATA.source} · ${DATA.kpis.total_rows} cases`;
   if (j.error) { $("#view").innerHTML = `<div class="error">Could not load data — ${j.error}${j.hint ? " — " + j.hint : ""}</div>`; }
