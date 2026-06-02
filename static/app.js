@@ -5,6 +5,9 @@ const F = { year: "", adviser: "", biz: "" };      // global filters
 let EXPLORER = {};                                  // drill-down filter (category/provider/area)
 
 const $ = (s, r = document) => r.querySelector(s);
+// Server mode fetches /api/data; offline snapshot reads window.EMBEDDED_DATA.
+const OFFLINE = typeof window !== "undefined" && window.EMBEDDED_DATA;
+async function fetchData() { return OFFLINE ? window.EMBEDDED_DATA : (await fetch("/api/data")).json(); }
 const gbp = (v) => v == null || v === "" ? "" : "£" + Math.round(v).toLocaleString("en-GB");
 const num = (v) => (v || 0).toLocaleString("en-GB");
 
@@ -330,23 +333,25 @@ function wireControls() {
   $("#fAdviser").onchange = e => { F.adviser = e.target.value; renderRoute(); };
   $("#fBiz").onchange = e => { F.biz = e.target.value; renderRoute(); };
   $("#btnReset").onclick = () => { F.year = F.adviser = F.biz = ""; EXPLORER = {}; $("#fYear").value = $("#fAdviser").value = $("#fBiz").value = ""; renderRoute(); };
-  $("#btnRefresh").onclick = async () => { $("#btnRefresh").textContent = "↻ Refreshing…"; try { await fetch("/api/refresh", { method: "POST" }); await load(); } finally { $("#btnRefresh").textContent = "↻ Refresh data"; } };
+  if (OFFLINE) { $("#btnRefresh").title = "Offline snapshot — live refresh needs the app running on a computer"; }
+  $("#btnRefresh").onclick = async () => {
+    if (OFFLINE) { alert("This is an offline snapshot of your sheet.\nLive refresh needs the app running on a computer (python app.py)."); return; }
+    $("#btnRefresh").textContent = "↻ Refreshing…"; try { await fetch("/api/refresh", { method: "POST" }); await load(); } finally { $("#btnRefresh").textContent = "↻ Refresh data"; }
+  };
   window.addEventListener("hashchange", renderRoute);
 }
 async function load() {
-  const res = await fetch("/api/data");
-  const j = await res.json();
+  const j = await fetchData();
   if (j.error) { $("#view").innerHTML = ""; $("#view").appendChild(h("div", { class: "error" }, h("strong", {}, "Could not load data. "), j.error + (j.hint ? " — " + j.hint : ""))); $("#srcLine").textContent = "data error"; return; }
   DATA = j;
   $("#srcLine").textContent = `Source: ${DATA.source} · generated ${DATA.generated.replace("T", " ")} · ${DATA.kpis.total_rows} cases`;
   renderRoute();
 }
-(function init() {
-  fetch("/api/data").then(r => r.json()).then(j => {
-    if (!j.error) { DATA = j; populateFilters(); }
-    wireControls();
-    $("#srcLine").textContent = j.error ? "data error" : `Source: ${DATA.source} · ${DATA.kpis.total_rows} cases`;
-    if (j.error) { $("#view").innerHTML = `<div class="error">Could not load data — ${j.error}${j.hint ? " — " + j.hint : ""}</div>`; }
-    else renderRoute();
-  });
+(async function init() {
+  const j = await fetchData();
+  if (!j.error) { DATA = j; populateFilters(); }
+  wireControls();
+  $("#srcLine").textContent = j.error ? "data error" : `Source: ${DATA.source} · ${DATA.kpis.total_rows} cases`;
+  if (j.error) { $("#view").innerHTML = `<div class="error">Could not load data — ${j.error}${j.hint ? " — " + j.hint : ""}</div>`; }
+  else renderRoute();
 })();

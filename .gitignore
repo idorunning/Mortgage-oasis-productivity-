@@ -1,6 +1,7 @@
 # Generated output containing client PII — never commit
 dashboard.html
 report.txt
+mortgage_oasis_app.html
 
 # Secrets & credentials
 .env
