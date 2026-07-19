@@ -24,31 +24,22 @@ import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-FETCH_TAIL = '''  Promise.all([
-    fetch("../data/tracker.json").then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }),
-    fetch("../data/statements.json").then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }),
-  ]).then(function (payloads) {
-    state.tracker = payloads[0];
-    state.statements = payloads[1];
-    buildMatches();
-    initShell();
-    renderAll();
-  }).catch(function (err) {
-    console.error(err);
-    document.getElementById("load-error").hidden = false;
-  });'''
+# Offline build: replace the network load inside loadData() with a read of the
+# embedded JSON blob. Keep loadData()'s promise signature so the rest is unchanged.
+FETCH_TAIL = '''    return Promise.all([
+      fetch("../data/tracker.json", { cache: "no-store" }).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }),
+      fetch("../data/statements.json", { cache: "no-store" }).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }),
+    ]).then(function (payloads) {
+      state.tracker = payloads[0];
+      state.statements = payloads[1];
+      buildMatches();
+    });'''
 
-EMBED_TAIL = '''  try {
-    var embedded = JSON.parse(document.getElementById("mo-data").textContent);
+EMBED_TAIL = '''    var embedded = JSON.parse(document.getElementById("mo-data").textContent);
     state.tracker = embedded.tracker;
     state.statements = embedded.statements;
     buildMatches();
-    initShell();
-    renderAll();
-  } catch (err) {
-    console.error(err);
-    document.getElementById("load-error").hidden = false;
-  }'''
+    return Promise.resolve();'''
 
 
 def main():
@@ -90,9 +81,9 @@ def main():
     <span class="brand-sub">Dashboard · local copy · data """ + generated + """</span>
   </div>
   <nav class="tabs" id="tabs">
-    <button class="tab active" data-view="overview">Overview</button>
+    <button class="tab active" data-view="reconciliation">Commission chasing</button>
+    <button class="tab" data-view="overview">Overview</button>
     <button class="tab" data-view="tracker">Commission tracker</button>
-    <button class="tab" data-view="reconciliation">Reconciliation</button>
     <button class="tab" data-view="recurring">Recurring income</button>
     <button class="tab" data-view="statements">Statements</button>
   </nav>
@@ -105,9 +96,9 @@ def main():
 </header>
 
 <main id="app">
-  <section id="view-overview" class="view active"></section>
+  <section id="view-reconciliation" class="view active"></section>
+  <section id="view-overview" class="view"></section>
   <section id="view-tracker" class="view"></section>
-  <section id="view-reconciliation" class="view"></section>
   <section id="view-recurring" class="view"></section>
   <section id="view-statements" class="view"></section>
   <p id="load-error" class="load-error" hidden>Couldn&rsquo;t load the embedded dashboard data.</p>

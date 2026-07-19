@@ -13,6 +13,25 @@ import sys
 from datetime import datetime
 
 
+def merge(statements):
+    """De-duplicate a flat list of statements and return the data/statements.json
+    payload. Dedup key is (date, total, item count) so the same statement filed
+    twice — or saved under a "(1)"-style copy name — collapses to one; the
+    shortest filename wins. Reused by scripts/gdrive_refresh.py."""
+    seen = {}
+    for s in statements:
+        key = (s["date"], round(s["total"], 2), len(s["items"]))
+        prev = seen.get(key)
+        if prev is None or (len(s["file"]), s["file"]) < (len(prev["file"]), prev["file"]):
+            seen[key] = s
+    merged = sorted(seen.values(), key=lambda s: (s["date"] or "", s["file"]))
+    return {
+        "generatedAt": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "source": "TRM weekly commission consolidation statements (Drive: commision/Statements)",
+        "statements": merged,
+    }
+
+
 def main():
     args = sys.argv[1:]
     out_path = "data/statements.json"
@@ -29,29 +48,14 @@ def main():
             payload = json.load(fh)
         statements.extend(payload["statements"])
 
-    # De-duplicate: same filename (statement filed twice), or an identical
-    # statement saved under a "(1)"-style copy name (same date, total and
-    # item count). Prefer the shortest filename of each duplicate group.
-    seen = {}
-    for s in statements:
-        key = (s["date"], round(s["total"], 2), len(s["items"]))
-        prev = seen.get(key)
-        if prev is None or (len(s["file"]), s["file"]) < (len(prev["file"]), prev["file"]):
-            seen[key] = s
-    merged = sorted(seen.values(), key=lambda s: (s["date"], s["file"]))
-    dropped = len(statements) - len(merged)
+    result = merge(statements)
+    dropped = len(statements) - len(result["statements"])
     if dropped:
         print(f"note: dropped {dropped} duplicate statement(s)")
-
-    result = {
-        "generatedAt": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "source": "TRM weekly commission consolidation statements (Drive: commision/Statements)",
-        "statements": merged,
-    }
     with open(out_path, "w") as fh:
         json.dump(result, fh, indent=1)
-    total = sum(s["total"] for s in merged)
-    print(f"{len(merged)} statements -> {out_path} (grand total £{total:,.2f})")
+    total = sum(s["total"] for s in result["statements"])
+    print(f"{len(result['statements'])} statements -> {out_path} (grand total £{total:,.2f})")
 
 
 if __name__ == "__main__":

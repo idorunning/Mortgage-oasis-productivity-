@@ -1,0 +1,8 @@
+{
+  "port": 8000,
+  "trackerSheetId": "1eh9XnT_nmb0Ha_aNE02k6ZwfnfzRk_Qm6N2HbIyMMfI",
+  "statementsFolderId": "PASTE_YOUR_STATEMENTS_FOLDER_ID_HERE",
+  "credentials": "credentials.json",
+  "token": "token.json",
+  "cacheDir": ".cache"
+}
