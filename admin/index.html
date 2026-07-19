@@ -15,13 +15,15 @@
     <span class="brand-sub">Admin</span>
   </div>
   <nav class="tabs" id="tabs">
-    <button class="tab active" data-view="overview">Overview</button>
+    <button class="tab active" data-view="reconciliation">Commission chasing</button>
+    <button class="tab" data-view="overview">Overview</button>
     <button class="tab" data-view="tracker">Commission tracker</button>
-    <button class="tab" data-view="reconciliation">Reconciliation</button>
     <button class="tab" data-view="recurring">Recurring income</button>
     <button class="tab" data-view="statements">Statements</button>
   </nav>
   <div class="topbar-right">
+    <button id="refresh-btn" class="refresh-btn" title="Pull the latest Tracker and statements from Google">Refresh from Google</button>
+    <span id="refresh-status" class="refresh-status"></span>
     <select id="year-filter" class="select" aria-label="Year filter">
       <option value="all">All years</option>
     </select>
@@ -30,9 +32,9 @@
 </header>
 
 <main id="app">
-  <section id="view-overview" class="view active"></section>
+  <section id="view-reconciliation" class="view active"></section>
+  <section id="view-overview" class="view"></section>
   <section id="view-tracker" class="view"></section>
-  <section id="view-reconciliation" class="view"></section>
   <section id="view-recurring" class="view"></section>
   <section id="view-statements" class="view"></section>
   <p id="load-error" class="load-error" hidden>

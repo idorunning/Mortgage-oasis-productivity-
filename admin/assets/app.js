@@ -16,6 +16,7 @@
     recon: loadReconSettings(),
     includeGI: false,
     chases: loadChases(),
+    worklistSort: "amount",
   };
 
   function loadChases() {
@@ -839,12 +840,24 @@
     return el("div", { class: "slider-block" }, [label, input]);
   }
 
+  // Aging buckets for outstanding receivables. Fixed 30/60/90-day bands (the
+  // convention for aged debt); a band entirely past the overdue slider is red.
+  var AGING_BUCKETS = [
+    { name: "0–30 days", min: 0, max: 30 },
+    { name: "31–60 days", min: 31, max: 60 },
+    { name: "61–90 days", min: 61, max: 90 },
+    { name: "90+ days", min: 91, max: Infinity },
+  ];
+
   function renderReconciliation() {
     var root = document.getElementById("view-reconciliation");
     root.innerHTML = "";
     var cases = filteredCases();
 
-    // settings card with the two sliding scales
+    var heroWrap = el("div");
+    root.appendChild(heroWrap);
+
+    // thresholds card with the two sliding scales
     var settings = el("div", { class: "card" });
     settings.appendChild(el("div", { class: "card-head" }, [
       el("div", {}, [
@@ -854,7 +867,7 @@
     ]));
     var sliders = el("div", { class: "sliders" });
     sliders.appendChild(sliderBlock(
-      "Outstanding time limit", state.recon.days + " days", 7, 365, 7, state.recon.days,
+      "Overdue after", state.recon.days + " days", 7, 365, 7, state.recon.days,
       function (v, label) {
         state.recon.days = v;
         label.querySelector("b").textContent = v + " days";
@@ -874,127 +887,184 @@
     settings.appendChild(sliders);
     settings.appendChild(el("p", {
       class: "slider-note",
-      text: "Outstanding cases older than the time limit are flagged as overdue. Cases whose paid amount differs from the predicted commission by more than the variance threshold are flagged for checking.",
+      text: "Outstanding cases older than the overdue limit get a Chase button. Cases whose paid amount differs from the predicted commission by more than the variance threshold are flagged for checking.",
     }));
     root.appendChild(settings);
 
-    var tilesWrap = el("div");
     var tablesWrap = el("div");
-    root.appendChild(tilesWrap);
     root.appendChild(tablesWrap);
 
     function refreshReconTables() {
-      tilesWrap.innerHTML = "";
+      heroWrap.innerHTML = "";
       tablesWrap.innerHTML = "";
 
       var outstanding = cases.filter(function (c) { return caseStatus(c) === "outstanding"; });
       var overdue = outstanding.filter(isOverdue);
-      var flagged = cases.filter(isVarianceFlagged);
       var matchedOnly = cases.filter(function (c) { return caseStatus(c) === "matched"; });
       var outstandingSum = outstanding.reduce(function (a, c) { return a + (c.commissionWritten || 0); }, 0);
-      var overdueSum = overdue.reduce(function (a, c) { return a + (c.commissionWritten || 0); }, 0);
 
-      var tiles = el("div", { class: "tile-row" });
-      [
-        { label: "Outstanding commission", value: gbp(outstandingSum, { compact: true }), sub: outstanding.length + " cases" },
-        { label: "Overdue (> " + state.recon.days + " days)", value: gbp(overdueSum, { compact: true }), sub: overdue.length + " cases", cls: overdue.length ? "down" : "" },
-        { label: "Variance flags (> " + state.recon.variancePct + "%)", value: String(flagged.length), sub: "paid vs predicted", cls: flagged.length ? "down" : "" },
-        { label: "Paid per statements, not in tracker", value: String(matchedOnly.length), sub: gbp(matchedOnly.reduce(function (a, c) { return a + c._matchedPaid; }, 0), { compact: true }) },
-      ].forEach(function (tdef) {
-        tiles.appendChild(el("div", { class: "tile" }, [
-          el("div", { class: "label", text: tdef.label }),
-          el("div", { class: "value" + (tdef.cls ? " " + tdef.cls : ""), text: tdef.value }),
-          el("div", { class: "delta" + (tdef.cls ? " " + tdef.cls : ""), text: tdef.sub }),
+      // ---- hero: outstanding-to-chase + aging ----
+      var buckets = AGING_BUCKETS.map(function (b) {
+        var inBucket = outstanding.filter(function (c) {
+          var age = ageDays(c.date);
+          return age != null && age >= b.min && age <= b.max;
+        });
+        return {
+          name: b.name,
+          overdue: b.min > state.recon.days,
+          sum: inBucket.reduce(function (a, c) { return a + (c.commissionWritten || 0); }, 0),
+          count: inBucket.length,
+        };
+      });
+      var bucketMax = Math.max.apply(null, buckets.map(function (b) { return b.sum; }).concat([1]));
+
+      var agingRows = el("div", { class: "aging" });
+      buckets.forEach(function (b) {
+        agingRows.appendChild(el("div", { class: "aging-row" }, [
+          el("div", { class: "aging-name", text: b.name }),
+          el("div", { class: "aging-track" }, [
+            el("div", { class: "aging-bar" + (b.overdue ? " overdue" : ""),
+              style: "width:" + (b.sum / bucketMax * 100).toFixed(1) + "%" }),
+          ]),
+          el("div", { class: "aging-val", html: gbp(b.sum, { compact: true }) +
+            '<span class="count">' + b.count + "</span>" }),
         ]));
       });
-      tilesWrap.appendChild(tiles);
 
-      // outstanding table, oldest first
+      var hero = el("div", { class: "card" }, [
+        el("div", { class: "hero" }, [
+          el("div", {}, [
+            el("div", { class: "hero-label", text: "Outstanding to chase" }),
+            el("div", { class: "hero-figure" + (outstandingSum ? "" : " zero"), text: gbp(outstandingSum) }),
+            el("div", { class: "hero-sub", text: outstanding.length + " cases awaiting commission · " +
+              overdue.length + " overdue (" + gbp(overdue.reduce(function (a, c) { return a + (c.commissionWritten || 0); }, 0), { compact: true }) + ")" }),
+          ]),
+          el("div", {}, [
+            el("div", { class: "hero-label", text: "Age of outstanding commission" }),
+            agingRows,
+          ]),
+        ]),
+      ]);
+      heroWrap.appendChild(hero);
+
+      // ---- worklist: outstanding → chased → paid ----
       var card1 = el("div", { class: "card" });
+      var sortBtns = el("div", { class: "sort-btns" }, [
+        el("button", { class: "sort-btn" + (state.worklistSort === "amount" ? " active" : ""), text: "Biggest first",
+          onclick: function () { state.worklistSort = "amount"; refreshReconTables(); } }),
+        el("button", { class: "sort-btn" + (state.worklistSort === "age" ? " active" : ""), text: "Oldest first",
+          onclick: function () { state.worklistSort = "age"; refreshReconTables(); } }),
+      ]);
       card1.appendChild(el("div", { class: "card-head" }, [
         el("div", {}, [
-          el("h2", { text: "Outstanding commission" }),
-          el("div", { class: "sub", text: "Written business with no payment recorded in the tracker and no statement match. Oldest first." }),
+          el("h2", { text: "Chase worklist" }),
+          el("div", { class: "sub", text: "Written business with no commission received yet. Chase the overdue ones; a case drops off once a statement payment or the tracker records it as received." }),
         ]),
+        el("div", { class: "spacer" }),
+        sortBtns,
       ]));
       var t1 = el("table", { class: "data" });
       t1.appendChild(el("thead", {}, [el("tr", {}, [
         el("th", { text: "Date" }), el("th", { text: "Client" }), el("th", { text: "Business" }),
         el("th", { text: "Provider" }), el("th", { class: "num", text: "Predicted" }),
-        el("th", { class: "num", text: "Days waiting" }), el("th", { text: "Status" }),
+        el("th", { class: "num", text: "Days" }), el("th", { text: "Status" }),
         el("th", { text: "Action" }),
       ])]));
       var tb1 = el("tbody");
-      outstanding.slice().sort(function (a, b) { return (a.date || "").localeCompare(b.date || ""); })
-        .forEach(function (c) {
-          var age = ageDays(c.date);
-          var chase = chaseFor(c);
-          var statusBits = [];
-          if (isFollowUpDue(c)) statusBits.push(el("span", { class: "badge bad", text: "Follow up due" }));
-          else if (isOverdue(c)) statusBits.push(el("span", { class: "badge bad", text: "Overdue" }));
-          else statusBits.push(el("span", { class: "badge wait", text: "Awaiting" }));
-          if (chase) statusBits.push(el("span", {
-            class: "chase-meta",
-            text: "Chased " + shortDate(chase.chasedOn) + " · follow up " + shortDate(chase.followUpDue),
-          }));
-          var actionCell = el("td", {});
-          if (isOverdue(c)) {
-            var btn = el("button", { class: "chase-btn", text: chase ? "Chase again" : "Chase" });
-            btn.addEventListener("click", function () {
-              window.open(chaseEmailUrl(c), "_blank", "noopener");
-              recordChase(c);
-              refreshReconTables();
-            });
-            actionCell.appendChild(btn);
-          }
-          tb1.appendChild(el("tr", {}, [
-            el("td", { text: c.date || "—" }),
-            el("td", { text: c.client || "—", title: c.property || "" }),
-            el("td", { text: c.business || c.segment || "—" }),
-            el("td", { text: c.provider || "—" }),
-            el("td", { class: "num", text: gbp(c.commissionWritten) }),
-            el("td", { class: "num", text: age != null ? String(age) : "—" }),
-            el("td", {}, statusBits),
-            actionCell,
-          ]));
-        });
-      if (!outstanding.length) tb1.appendChild(el("tr", {}, [el("td", { colspan: "8", class: "empty", text: "Nothing outstanding in this period." })]));
+      var sortedWork = outstanding.slice().sort(function (a, b) {
+        if (state.worklistSort === "amount") return (b.commissionWritten || 0) - (a.commissionWritten || 0);
+        return (a.date || "").localeCompare(b.date || ""); // oldest first
+      });
+      sortedWork.forEach(function (c) {
+        var age = ageDays(c.date);
+        var chase = chaseFor(c);
+        var statusBits = [];
+        if (isFollowUpDue(c)) statusBits.push(el("span", { class: "badge bad", text: "Follow up due" }));
+        else if (isOverdue(c)) statusBits.push(el("span", { class: "badge bad", text: "Overdue" }));
+        else statusBits.push(el("span", { class: "badge wait", text: "Awaiting" }));
+        if (chase) statusBits.push(el("span", {
+          class: "chase-meta",
+          text: "Chased " + shortDate(chase.chasedOn) + " · follow up " + shortDate(chase.followUpDue),
+        }));
+        var actionCell = el("td", {});
+        if (isOverdue(c)) {
+          var btn = el("button", { class: "chase-btn", text: chase ? "Chase again" : "Chase" });
+          btn.addEventListener("click", function () {
+            window.open(chaseEmailUrl(c), "_blank", "noopener");
+            recordChase(c);
+            refreshReconTables();
+          });
+          actionCell.appendChild(btn);
+        }
+        tb1.appendChild(el("tr", {}, [
+          el("td", { text: c.date || "—" }),
+          el("td", { text: c.client || "—", title: c.property || "" }),
+          el("td", { text: c.business || c.segment || "—" }),
+          el("td", { text: c.provider || "—" }),
+          el("td", { class: "num", text: gbp(c.commissionWritten) }),
+          el("td", { class: "num", text: age != null ? String(age) : "—" }),
+          el("td", {}, statusBits),
+          actionCell,
+        ]));
+      });
+      if (!outstanding.length) tb1.appendChild(el("tr", {}, [el("td", { colspan: "8", class: "empty", text: "Nothing outstanding in this period — all commission accounted for." })]));
       t1.appendChild(tb1);
       card1.appendChild(el("div", { class: "table-scroll" }, [t1]));
       tablesWrap.appendChild(card1);
 
-      // variance table
+      // ---- tracker vs statement: predicted vs paid, shortfalls ----
+      // Every case with a payment (tracker "received" or a statement match)
+      // where predicted and paid diverge by at least £1, biggest gap first.
+      var compare = cases.filter(function (c) {
+        var paid = effectiveReceived(c);
+        return paid != null && c.commissionWritten > 0 &&
+          Math.abs((c.commissionWritten || 0) - paid) >= 1;
+      }).map(function (c) {
+        return { c: c, shortfall: (c.commissionWritten || 0) - effectiveReceived(c) };
+      }).sort(function (a, b) { return Math.abs(b.shortfall) - Math.abs(a.shortfall); });
+
       var card2 = el("div", { class: "card" });
       card2.appendChild(el("div", { class: "card-head" }, [
         el("div", {}, [
-          el("h2", { text: "Paid vs predicted — variance flags" }),
-          el("div", { class: "sub", text: "Cases where the amount paid differs from the predicted commission by more than the threshold." }),
+          el("h2", { text: "Tracker vs statements — predicted vs paid" }),
+          el("div", { class: "sub", text: "Cases where the commission actually paid differs from the predicted amount. A negative shortfall means you were underpaid; flagged rows exceed the variance threshold." }),
         ]),
       ]));
       var t2 = el("table", { class: "data" });
       t2.appendChild(el("thead", {}, [el("tr", {}, [
-        el("th", { text: "Date" }), el("th", { text: "Client" }), el("th", { text: "Business" }),
+        el("th", { text: "Date" }), el("th", { text: "Client" }), el("th", { text: "Provider" }),
         el("th", { class: "num", text: "Predicted" }), el("th", { class: "num", text: "Paid" }),
-        el("th", { class: "num", text: "Variance" }), el("th", { text: "Paid via" }),
+        el("th", { class: "num", text: "Shortfall" }), el("th", { class: "num", text: "Variance" }),
+        el("th", { text: "Paid via" }),
       ])]));
       var tb2 = el("tbody");
-      flagged.slice().sort(function (a, b) { return Math.abs(variancePct(b)) - Math.abs(variancePct(a)); })
-        .forEach(function (c) {
-          var v = variancePct(c);
-          tb2.appendChild(el("tr", {}, [
-            el("td", { text: c.date || "—" }),
-            el("td", { text: c.client || "—", title: c.property || "" }),
-            el("td", { text: c.business || c.segment || "—" }),
-            el("td", { class: "num", text: gbp(c.commissionWritten) }),
-            el("td", { class: "num", text: gbp(effectiveReceived(c)) }),
-            el("td", { class: "num " + (v < 0 ? "neg" : "pos"), text: (v > 0 ? "+" : "") + v.toFixed(0) + "%" }),
-            el("td", { text: c.commissionReceived != null ? "Tracker" : "Statement match" }),
-          ]));
-        });
-      if (!flagged.length) tb2.appendChild(el("tr", {}, [el("td", { colspan: "7", class: "empty", text: "No variance flags at this threshold." })]));
+      compare.slice(0, 100).forEach(function (row) {
+        var c = row.c;
+        var v = variancePct(c);
+        var owed = row.shortfall > 0; // predicted exceeds paid → underpaid
+        var statusCell = el("td", { text: c.commissionReceived != null ? "Tracker" : "Statement match" });
+        if (isVarianceFlagged(c)) statusCell.appendChild(el("span", { class: "badge bad", text: " check", title: "Exceeds the variance threshold" }));
+        tb2.appendChild(el("tr", {}, [
+          el("td", { text: c.date || "—" }),
+          el("td", { text: c.client || "—", title: c.property || "" }),
+          el("td", { text: c.provider || "—" }),
+          el("td", { class: "num", text: gbp(c.commissionWritten) }),
+          el("td", { class: "num", text: gbp(effectiveReceived(c)) }),
+          el("td", { class: "num " + (owed ? "neg" : "pos"), text: (owed ? "−" : "+") + gbp(Math.abs(row.shortfall)) }),
+          el("td", { class: "num " + (v < 0 ? "neg" : "pos"), text: (v > 0 ? "+" : "") + v.toFixed(0) + "%" }),
+          statusCell,
+        ]));
+      });
+      if (!compare.length) tb2.appendChild(el("tr", {}, [el("td", { colspan: "8", class: "empty", text: "Every paid case matches its predicted commission." })]));
       t2.appendChild(tb2);
       card2.appendChild(el("div", { class: "table-scroll" }, [t2]));
+      if (compare.length > 100) card2.appendChild(el("p", { class: "table-note", text: "Showing the 100 biggest gaps of " + compare.length + "." }));
       tablesWrap.appendChild(card2);
+
+      // ---- needs review: matched-not-in-tracker + unmatched payments ----
+      tablesWrap.appendChild(el("h2", { class: "section-title", text: "Needs review" }));
+      tablesWrap.appendChild(el("p", { class: "section-note",
+        text: "Matching runs automatically — these are the cases it isn't sure about, so nothing is silently wrong." }));
 
       // statement payments matched to cases the tracker hasn't recorded yet
       if (matchedOnly.length) {
@@ -1300,9 +1370,8 @@
     renderStatements();
     var meta = document.getElementById("data-meta");
     meta.textContent = "Tracker: " + state.tracker.cases.length + " cases · Statements: " +
-      state.statements.statements.length + " · Data extracted " +
-      (state.tracker.generatedAt || "").slice(0, 10) +
-      " — refresh via scripts/ (see README)";
+      state.statements.statements.length + " · Data as of " +
+      (state.tracker.generatedAt || "").slice(0, 10);
   }
 
   function initShell() {
@@ -1335,15 +1404,54 @@
       rootEl.setAttribute("data-theme", dark ? "light" : "dark");
       renderAll(); // charts read colors from CSS vars at render time
     });
+
+    var refreshBtn = document.getElementById("refresh-btn");
+    if (refreshBtn) refreshBtn.addEventListener("click", runRefresh);
   }
 
-  Promise.all([
-    fetch("../data/tracker.json").then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }),
-    fetch("../data/statements.json").then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }),
-  ]).then(function (payloads) {
-    state.tracker = payloads[0];
-    state.statements = payloads[1];
-    buildMatches();
+  // Ask the local server (Workstream A) to pull the latest Tracker + statements
+  // from Google, then reload the data into the dashboard. No client data passes
+  // through anything but the local machine and Google.
+  function runRefresh() {
+    var btn = document.getElementById("refresh-btn");
+    var status = document.getElementById("refresh-status");
+    if (btn.disabled) return;
+    btn.disabled = true;
+    status.className = "refresh-status";
+    status.textContent = "Refreshing from Google…";
+    fetch("/api/refresh", { method: "POST", headers: { "X-Requested-With": "dashboard" } })
+      .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
+      .then(function (res) {
+        if (!res.ok || !res.body.ok) throw new Error((res.body && res.body.error) || "Refresh failed");
+        return loadData().then(function () {
+          renderAll();
+          status.className = "refresh-status ok";
+          status.textContent = "Updated " + (res.body.summary || "");
+        });
+      })
+      .catch(function (err) {
+        status.className = "refresh-status err";
+        status.textContent = String(err.message || err);
+        // A plain static server (no /api/refresh) can't refresh — say so plainly.
+        if (/Unexpected token|JSON|501|405|404/.test(String(err))) {
+          status.textContent = "Refresh needs the local app (run-dashboard) — see README";
+        }
+      })
+      .then(function () { btn.disabled = false; });
+  }
+
+  function loadData() {
+    return Promise.all([
+      fetch("../data/tracker.json", { cache: "no-store" }).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }),
+      fetch("../data/statements.json", { cache: "no-store" }).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }),
+    ]).then(function (payloads) {
+      state.tracker = payloads[0];
+      state.statements = payloads[1];
+      buildMatches();
+    });
+  }
+
+  loadData().then(function () {
     initShell();
     renderAll();
   }).catch(function (err) {

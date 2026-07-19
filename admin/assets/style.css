@@ -202,6 +202,48 @@ table.data .neg { color: var(--bad-text); }
 .rowlink { cursor: pointer; }
 .empty { color: var(--muted); padding: 18px 0; }
 
+.section-title { font-size: 15px; font-weight: 650; margin: 6px 2px 2px; }
+.section-note { font-size: 13px; color: var(--ink-2); margin: 0 2px 14px; }
+
+/* hero: outstanding-to-chase + aging */
+.hero {
+  display: grid; grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+  gap: 28px; align-items: center;
+}
+@media (max-width: 720px) { .hero { grid-template-columns: 1fr; } }
+.hero-figure { font-size: 46px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.05; }
+.hero-figure.zero { color: var(--good-text); }
+.hero-label { font-size: 13.5px; color: var(--ink-2); margin-bottom: 6px; }
+.hero-sub { font-size: 13px; color: var(--muted); margin-top: 8px; }
+.aging { display: flex; flex-direction: column; gap: 9px; }
+.aging-row { display: grid; grid-template-columns: 78px minmax(0, 1fr) auto; gap: 12px; align-items: center; }
+.aging-name { font-size: 12.5px; color: var(--ink-2); white-space: nowrap; }
+.aging-track { height: 16px; background: var(--wash); border-radius: 5px; overflow: hidden; }
+.aging-bar { height: 100%; border-radius: 5px; background: var(--series-1); min-width: 2px; }
+.aging-bar.overdue { background: var(--bad-text); }
+.aging-val { font-size: 12.5px; font-variant-numeric: tabular-nums; color: var(--ink); white-space: nowrap; }
+.aging-val .count { color: var(--muted); margin-left: 6px; }
+
+/* small sort toggle */
+.sort-btns { display: inline-flex; gap: 4px; }
+.sort-btn {
+  font: inherit; font-size: 12.5px; cursor: pointer; color: var(--ink-2);
+  background: none; border: 1px solid var(--baseline); border-radius: 7px; padding: 4px 10px;
+}
+.sort-btn.active { background: var(--wash); color: var(--accent); border-color: var(--accent); font-weight: 600; }
+
+/* refresh button + status */
+.refresh-btn {
+  font: inherit; font-size: 13.5px; font-weight: 600; cursor: pointer;
+  color: #fff; background: var(--accent); border: 1px solid var(--accent);
+  border-radius: 8px; padding: 7px 14px; white-space: nowrap;
+}
+.refresh-btn:hover { filter: brightness(1.05); }
+.refresh-btn:disabled { opacity: 0.6; cursor: default; }
+.refresh-status { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.refresh-status.err { color: var(--bad-text); }
+.refresh-status.ok { color: var(--good-text); }
+
 /* chase workflow */
 .chase-btn {
   font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer;
