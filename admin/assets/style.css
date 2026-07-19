@@ -186,6 +186,16 @@ table.data .neg { color: var(--bad-text); }
 }
 .badge.ok { background: rgba(12, 163, 12, 0.12); color: var(--good-text); }
 .badge.wait { background: rgba(237, 161, 0, 0.15); color: var(--ink-2); }
+.badge.bad { background: rgba(208, 59, 59, 0.14); color: var(--bad-text); }
+.badge.stmt { background: rgba(27, 175, 122, 0.14); color: var(--good-text); }
+
+/* threshold sliders */
+.sliders { display: flex; gap: 28px; flex-wrap: wrap; }
+.slider-block { min-width: 240px; }
+.slider-block .slider-label { font-size: 13px; color: var(--ink-2); display: flex; justify-content: space-between; gap: 12px; }
+.slider-block .slider-label b { color: var(--ink); }
+.slider-block input[type="range"] { width: 100%; accent-color: var(--accent); margin-top: 6px; }
+.slider-note { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
 
 .filters { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
 .table-note { font-size: 12.5px; color: var(--muted); margin-top: 10px; }

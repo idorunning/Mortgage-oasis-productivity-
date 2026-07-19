@@ -12,7 +12,24 @@
     year: "all",
     trackerFilters: { segment: "all", admin: "all", status: "all", search: "" },
     openStatement: null,
+    unmatchedItems: [],
+    recon: loadReconSettings(),
   };
+
+  function loadReconSettings() {
+    var defaults = { days: 90, variancePct: 25 };
+    try {
+      var saved = JSON.parse(localStorage.getItem("mo-recon-settings") || "{}");
+      return {
+        days: Number(saved.days) > 0 ? Number(saved.days) : defaults.days,
+        variancePct: Number(saved.variancePct) > 0 ? Number(saved.variancePct) : defaults.variancePct,
+      };
+    } catch (e) { return defaults; }
+  }
+
+  function saveReconSettings() {
+    try { localStorage.setItem("mo-recon-settings", JSON.stringify(state.recon)); } catch (e) {}
+  }
 
   var MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -85,8 +102,133 @@
 
   function caseStatus(c) {
     if (c.commissionReceived != null) return "received";
+    if (c._matchedPaid > 0) return "matched";       // paid per statements, not yet in tracker
     if (c.commissionWritten != null) return "outstanding";
     return "none";
+  }
+
+  function effectiveReceived(c) {
+    if (c.commissionReceived != null) return c.commissionReceived;
+    if (c._matchedPaid > 0) return c._matchedPaid;
+    return null;
+  }
+
+  function ageDays(iso) {
+    if (!iso) return null;
+    return Math.floor((Date.now() - new Date(iso + "T00:00:00").getTime()) / 86400000);
+  }
+
+  function isOverdue(c) {
+    var status = caseStatus(c);
+    if (status !== "outstanding") return false;
+    var age = ageDays(c.date);
+    return age != null && age > state.recon.days;
+  }
+
+  // Variance of what was actually paid vs the predicted (written) amount.
+  function variancePct(c) {
+    var rec = effectiveReceived(c);
+    if (rec == null || !(c.commissionWritten > 0)) return null;
+    return (rec / c.commissionWritten - 1) * 100;
+  }
+
+  function isVarianceFlagged(c) {
+    var v = variancePct(c);
+    return v != null && Math.abs(v) > state.recon.variancePct;
+  }
+
+  // ---------- statement ↔ tracker matching ----------
+  // Runs once at load. Statement line items (ignoring trail/renewal noise)
+  // are matched to tracker cases by client surname, then scored on provider,
+  // amount vs predicted commission, and date proximity. This is what lets a
+  // freshly dropped-in statements.json light up cases as paid automatically.
+
+  var LENDER_ALIASES = {
+    "lg": "legalandgeneral", "landg": "legalandgeneral", "legalgeneral": "legalandgeneral",
+    "leedsbuildingsociety": "leeds", "skiptonbs": "skipton", "skiptonbuildingsociety": "skipton",
+    "coventrymortgages": "coventry", "coventrybuildingsociety": "coventry",
+    "virginmoney": "virgin", "lvgi": "lv", "liverpoolvictoria": "lv",
+    "bmsolutions": "bm", "thecooperative": "cooperative", "cooperativebank": "cooperative",
+    "berkleyalexander": "berkeleyalexander", "cirencesterfriendly": "cirencester",
+    "natwestbank": "natwest", "nationwidebuildingsociety": "nationwide",
+    "scottishwidowsbank": "scottishwidows",
+  };
+
+  function lenderKey(name) {
+    if (!name) return "";
+    var key = String(name).toLowerCase().replace(/&/g, "and").replace(/[^a-z]/g, "");
+    return LENDER_ALIASES[key] || key;
+  }
+
+  function surnameTokens(text) {
+    if (!text) return [];
+    return String(text).toLowerCase().replace(/[^a-z\s-]/g, " ").split(/[\s-]+/)
+      .filter(function (t) { return t.length >= 3 && ["and", "the", "mrs"].indexOf(t) === -1; });
+  }
+
+  function itemSurname(item) {
+    // Mortgage items look like "HOLMES /M625621600 J"; protection like "Cross".
+    var raw = (item.surname || "").split("/")[0];
+    return surnameTokens(raw)[0] || null;
+  }
+
+  function buildMatches() {
+    var cases = state.tracker.cases;
+    cases.forEach(function (c) {
+      c._matchedPaid = 0;
+      c._matchedItems = [];
+      c._tokens = surnameTokens(c.client);
+      c._lender = lenderKey(c.provider);
+    });
+
+    // index cases by every name token
+    var index = {};
+    cases.forEach(function (c) {
+      c._tokens.forEach(function (t) {
+        (index[t] = index[t] || []).push(c);
+      });
+    });
+
+    var unmatched = [];
+    state.statements.statements.forEach(function (s) {
+      s.items.forEach(function (item) {
+        // Trail/renewal drip (class R and tiny amounts) has no tracker case.
+        if (item.class === "R" || Math.abs(item.amount) < 40) return;
+        var surname = itemSurname(item);
+        var candidates = (surname && index[surname]) || [];
+        var best = null, bestScore = 0;
+        candidates.forEach(function (c) {
+          if (c.commissionWritten == null && c.commissionReceived == null) return;
+          var score = 1; // surname matched
+          if (c._lender && lenderKey(item.lender) === c._lender) score += 2;
+          if (c.commissionReceived != null &&
+              Math.abs(item.amount - c.commissionReceived) <= Math.max(1, c.commissionReceived * 0.01)) {
+            score += 3; // exact match against the tracker's own received figure
+          } else if (c.commissionWritten > 0) {
+            var ratio = item.amount / c.commissionWritten;
+            if (ratio >= 0.7 && ratio <= 1.1) score += 2;
+            else if (ratio >= 0.4 && ratio <= 1.6) score += 1;
+          }
+          if (c.date && item.date) {
+            var lag = (new Date(item.date) - new Date(c.date)) / 86400000;
+            if (lag >= -45 && lag <= 550) score += 1;
+            else score -= 2; // payment far outside the case's life
+          }
+          // prefer cases not already matched to an item
+          if (c._matchedItems.length === 0) score += 0.5;
+          if (score > bestScore) { bestScore = score; best = c; }
+        });
+        if (best && bestScore >= 4) {
+          best._matchedPaid = Math.round((best._matchedPaid + item.amount) * 100) / 100;
+          best._matchedItems.push({ date: item.date, lender: item.lender, amount: item.amount, statement: s.date });
+        } else {
+          unmatched.push({ statement: s.date, date: item.date, lender: item.lender,
+                           name: ((item.firstName || "") + " " + (item.surname || "")).trim(),
+                           type: item.type, amount: item.amount });
+        }
+      });
+    });
+    state.unmatchedItems = unmatched.sort(function (a, b) { return Math.abs(b.amount) - Math.abs(a.amount); });
   }
 
   function monthRange(keys) {
@@ -529,7 +671,8 @@
     admSel.addEventListener("change", function () { f.admin = admSel.value; renderTracker(); });
     var statSel = el("select", { class: "select", "aria-label": "Status" });
     [["all", "Any status"], ["received", "Commission received"],
-     ["outstanding", "Awaiting commission"], ["none", "No commission recorded"]].forEach(function (p) {
+     ["matched", "Paid per statements"], ["outstanding", "Awaiting commission"],
+     ["none", "No commission recorded"]].forEach(function (p) {
       var opt = el("option", { value: p[0], text: p[1] });
       if (p[0] === f.status) opt.selected = true;
       statSel.appendChild(opt);
@@ -564,9 +707,23 @@
       var status = caseStatus(c);
       var badge = status === "received"
         ? el("span", { class: "badge ok", text: "Received" })
-        : status === "outstanding"
-          ? el("span", { class: "badge wait", text: "Awaiting" })
-          : el("span", { text: "—" });
+        : status === "matched"
+          ? el("span", { class: "badge stmt", text: "Paid (stmt)", title: "Matched to statement payment of " + gbp(c._matchedPaid) })
+          : status === "outstanding"
+            ? (isOverdue(c)
+                ? el("span", { class: "badge bad", text: "Overdue" })
+                : el("span", { class: "badge wait", text: "Awaiting" }))
+            : el("span", { text: "—" });
+      var statusCell = el("td", {}, [badge]);
+      if (isVarianceFlagged(c)) {
+        var v = variancePct(c);
+        statusCell.appendChild(document.createTextNode(" "));
+        statusCell.appendChild(el("span", {
+          class: "badge bad",
+          text: (v > 0 ? "+" : "") + v.toFixed(0) + "%",
+          title: "Paid differs from predicted by more than " + state.recon.variancePct + "%",
+        }));
+      }
       tbody.appendChild(el("tr", {}, [
         el("td", { text: c.date || "—" }),
         el("td", { text: c.client || "—", title: c.property || "" }),
@@ -577,12 +734,231 @@
         el("td", { class: "num", text: c.brokerFee != null ? gbp(c.brokerFee) : "—" }),
         el("td", { class: "num", text: c.commissionWritten != null ? gbp(c.commissionWritten) : "—" }),
         el("td", { class: "num " + (c.commissionReceived != null ? "pos" : ""), text: c.commissionReceived != null ? gbp(c.commissionReceived) : "—" }),
-        el("td", {}, [badge]),
+        statusCell,
       ]));
     });
     table.appendChild(tbody);
     card.appendChild(el("div", { class: "table-scroll" }, [table]));
     card.appendChild(el("p", { class: "table-note", text: "Hover a client for the property address. Data comes straight from the Tracker sheet's Business Register tabs." }));
+  }
+
+  // ---------- reconciliation view ----------
+
+  function sliderBlock(labelText, valueText, min, max, step, value, onInput) {
+    var label = el("div", { class: "slider-label" }, [
+      el("span", { text: labelText }),
+      el("b", { text: valueText }),
+    ]);
+    var input = el("input", { type: "range", min: min, max: max, step: step, value: value });
+    input.addEventListener("input", function () { onInput(Number(input.value), label); });
+    return el("div", { class: "slider-block" }, [label, input]);
+  }
+
+  function renderReconciliation() {
+    var root = document.getElementById("view-reconciliation");
+    root.innerHTML = "";
+    var cases = filteredCases();
+
+    // settings card with the two sliding scales
+    var settings = el("div", { class: "card" });
+    settings.appendChild(el("div", { class: "card-head" }, [
+      el("div", {}, [
+        el("h2", { text: "Highlight thresholds" }),
+        el("div", { class: "sub", text: "Both scales apply everywhere on the dashboard and are remembered on this device." }),
+      ]),
+    ]));
+    var sliders = el("div", { class: "sliders" });
+    sliders.appendChild(sliderBlock(
+      "Outstanding time limit", state.recon.days + " days", 7, 365, 7, state.recon.days,
+      function (v, label) {
+        state.recon.days = v;
+        label.querySelector("b").textContent = v + " days";
+        saveReconSettings();
+        clearTimeout(sliders._t); sliders._t = setTimeout(renderAllExceptRecon, 150);
+        refreshReconTables();
+      }));
+    sliders.appendChild(sliderBlock(
+      "Variance threshold", state.recon.variancePct + "%", 1, 60, 1, state.recon.variancePct,
+      function (v, label) {
+        state.recon.variancePct = v;
+        label.querySelector("b").textContent = v + "%";
+        saveReconSettings();
+        clearTimeout(sliders._t); sliders._t = setTimeout(renderAllExceptRecon, 150);
+        refreshReconTables();
+      }));
+    settings.appendChild(sliders);
+    settings.appendChild(el("p", {
+      class: "slider-note",
+      text: "Outstanding cases older than the time limit are flagged as overdue. Cases whose paid amount differs from the predicted commission by more than the variance threshold are flagged for checking.",
+    }));
+    root.appendChild(settings);
+
+    var tilesWrap = el("div");
+    var tablesWrap = el("div");
+    root.appendChild(tilesWrap);
+    root.appendChild(tablesWrap);
+
+    function refreshReconTables() {
+      tilesWrap.innerHTML = "";
+      tablesWrap.innerHTML = "";
+
+      var outstanding = cases.filter(function (c) { return caseStatus(c) === "outstanding"; });
+      var overdue = outstanding.filter(isOverdue);
+      var flagged = cases.filter(isVarianceFlagged);
+      var matchedOnly = cases.filter(function (c) { return caseStatus(c) === "matched"; });
+      var outstandingSum = outstanding.reduce(function (a, c) { return a + (c.commissionWritten || 0); }, 0);
+      var overdueSum = overdue.reduce(function (a, c) { return a + (c.commissionWritten || 0); }, 0);
+
+      var tiles = el("div", { class: "tile-row" });
+      [
+        { label: "Outstanding commission", value: gbp(outstandingSum, { compact: true }), sub: outstanding.length + " cases" },
+        { label: "Overdue (> " + state.recon.days + " days)", value: gbp(overdueSum, { compact: true }), sub: overdue.length + " cases", cls: overdue.length ? "down" : "" },
+        { label: "Variance flags (> " + state.recon.variancePct + "%)", value: String(flagged.length), sub: "paid vs predicted", cls: flagged.length ? "down" : "" },
+        { label: "Paid per statements, not in tracker", value: String(matchedOnly.length), sub: gbp(matchedOnly.reduce(function (a, c) { return a + c._matchedPaid; }, 0), { compact: true }) },
+      ].forEach(function (tdef) {
+        tiles.appendChild(el("div", { class: "tile" }, [
+          el("div", { class: "label", text: tdef.label }),
+          el("div", { class: "value" + (tdef.cls ? " " + tdef.cls : ""), text: tdef.value }),
+          el("div", { class: "delta" + (tdef.cls ? " " + tdef.cls : ""), text: tdef.sub }),
+        ]));
+      });
+      tilesWrap.appendChild(tiles);
+
+      // outstanding table, oldest first
+      var card1 = el("div", { class: "card" });
+      card1.appendChild(el("div", { class: "card-head" }, [
+        el("div", {}, [
+          el("h2", { text: "Outstanding commission" }),
+          el("div", { class: "sub", text: "Written business with no payment recorded in the tracker and no statement match. Oldest first." }),
+        ]),
+      ]));
+      var t1 = el("table", { class: "data" });
+      t1.appendChild(el("thead", {}, [el("tr", {}, [
+        el("th", { text: "Date" }), el("th", { text: "Client" }), el("th", { text: "Business" }),
+        el("th", { text: "Provider" }), el("th", { class: "num", text: "Predicted" }),
+        el("th", { class: "num", text: "Days waiting" }), el("th", { text: "Status" }),
+      ])]));
+      var tb1 = el("tbody");
+      outstanding.slice().sort(function (a, b) { return (a.date || "").localeCompare(b.date || ""); })
+        .forEach(function (c) {
+          var age = ageDays(c.date);
+          tb1.appendChild(el("tr", {}, [
+            el("td", { text: c.date || "—" }),
+            el("td", { text: c.client || "—", title: c.property || "" }),
+            el("td", { text: c.business || c.segment || "—" }),
+            el("td", { text: c.provider || "—" }),
+            el("td", { class: "num", text: gbp(c.commissionWritten) }),
+            el("td", { class: "num", text: age != null ? String(age) : "—" }),
+            el("td", {}, [isOverdue(c)
+              ? el("span", { class: "badge bad", text: "Overdue" })
+              : el("span", { class: "badge wait", text: "Awaiting" })]),
+          ]));
+        });
+      if (!outstanding.length) tb1.appendChild(el("tr", {}, [el("td", { colspan: "7", class: "empty", text: "Nothing outstanding in this period." })]));
+      t1.appendChild(tb1);
+      card1.appendChild(el("div", { class: "table-scroll" }, [t1]));
+      tablesWrap.appendChild(card1);
+
+      // variance table
+      var card2 = el("div", { class: "card" });
+      card2.appendChild(el("div", { class: "card-head" }, [
+        el("div", {}, [
+          el("h2", { text: "Paid vs predicted — variance flags" }),
+          el("div", { class: "sub", text: "Cases where the amount paid differs from the predicted commission by more than the threshold." }),
+        ]),
+      ]));
+      var t2 = el("table", { class: "data" });
+      t2.appendChild(el("thead", {}, [el("tr", {}, [
+        el("th", { text: "Date" }), el("th", { text: "Client" }), el("th", { text: "Business" }),
+        el("th", { class: "num", text: "Predicted" }), el("th", { class: "num", text: "Paid" }),
+        el("th", { class: "num", text: "Variance" }), el("th", { text: "Paid via" }),
+      ])]));
+      var tb2 = el("tbody");
+      flagged.slice().sort(function (a, b) { return Math.abs(variancePct(b)) - Math.abs(variancePct(a)); })
+        .forEach(function (c) {
+          var v = variancePct(c);
+          tb2.appendChild(el("tr", {}, [
+            el("td", { text: c.date || "—" }),
+            el("td", { text: c.client || "—", title: c.property || "" }),
+            el("td", { text: c.business || c.segment || "—" }),
+            el("td", { class: "num", text: gbp(c.commissionWritten) }),
+            el("td", { class: "num", text: gbp(effectiveReceived(c)) }),
+            el("td", { class: "num " + (v < 0 ? "neg" : "pos"), text: (v > 0 ? "+" : "") + v.toFixed(0) + "%" }),
+            el("td", { text: c.commissionReceived != null ? "Tracker" : "Statement match" }),
+          ]));
+        });
+      if (!flagged.length) tb2.appendChild(el("tr", {}, [el("td", { colspan: "7", class: "empty", text: "No variance flags at this threshold." })]));
+      t2.appendChild(tb2);
+      card2.appendChild(el("div", { class: "table-scroll" }, [t2]));
+      tablesWrap.appendChild(card2);
+
+      // statement payments matched to cases the tracker hasn't recorded yet
+      if (matchedOnly.length) {
+        var card3 = el("div", { class: "card" });
+        card3.appendChild(el("div", { class: "card-head" }, [
+          el("div", {}, [
+            el("h2", { text: "Paid on statements, not yet recorded in the tracker" }),
+            el("div", { class: "sub", text: "Statement payments auto-matched to tracker cases whose Commission Received column is still empty — copy these back into the sheet when confirmed." }),
+          ]),
+        ]));
+        var t3 = el("table", { class: "data" });
+        t3.appendChild(el("thead", {}, [el("tr", {}, [
+          el("th", { text: "Date" }), el("th", { text: "Client" }), el("th", { text: "Provider" }),
+          el("th", { class: "num", text: "Predicted" }), el("th", { class: "num", text: "Paid (statements)" }),
+          el("th", { text: "Statement(s)" }),
+        ])]));
+        var tb3 = el("tbody");
+        matchedOnly.slice().sort(function (a, b) { return (b.date || "").localeCompare(a.date || ""); })
+          .forEach(function (c) {
+            tb3.appendChild(el("tr", {}, [
+              el("td", { text: c.date || "—" }),
+              el("td", { text: c.client || "—", title: c.property || "" }),
+              el("td", { text: c.provider || "—" }),
+              el("td", { class: "num", text: c.commissionWritten != null ? gbp(c.commissionWritten) : "—" }),
+              el("td", { class: "num pos", text: gbp(c._matchedPaid) }),
+              el("td", { text: c._matchedItems.map(function (m) { return m.statement; }).join(", ") }),
+            ]));
+          });
+        t3.appendChild(tb3);
+        card3.appendChild(el("div", { class: "table-scroll" }, [t3]));
+        tablesWrap.appendChild(card3);
+      }
+
+      // unmatched statement money (non-trail) for the selected period
+      var unmatched = state.unmatchedItems.filter(function (it) {
+        return state.year === "all" || (it.statement || "").slice(0, 4) === state.year;
+      });
+      var card4 = el("div", { class: "card" });
+      card4.appendChild(el("div", { class: "card-head" }, [
+        el("div", {}, [
+          el("h2", { text: "Statement payments with no tracker match" }),
+          el("div", { class: "sub", text: "Initial commissions of £40+ on statements that couldn't be matched to a tracker case (trail and renewal drip is excluded). Worth a look — either the tracker is missing a case or the client name differs." }),
+        ]),
+      ]));
+      var t4 = el("table", { class: "data" });
+      t4.appendChild(el("thead", {}, [el("tr", {}, [
+        el("th", { text: "Statement" }), el("th", { text: "Date" }), el("th", { text: "Provider" }),
+        el("th", { text: "Client / reference" }), el("th", { text: "Type" }), el("th", { class: "num", text: "Amount" }),
+      ])]));
+      var tb4 = el("tbody");
+      unmatched.slice(0, 100).forEach(function (it) {
+        tb4.appendChild(el("tr", {}, [
+          el("td", { text: it.statement }),
+          el("td", { text: it.date || "—" }),
+          el("td", { text: it.lender || "—" }),
+          el("td", { text: it.name || "—" }),
+          el("td", { text: it.type || "—" }),
+          el("td", { class: "num " + (it.amount < 0 ? "neg" : ""), text: gbp(it.amount) }),
+        ]));
+      });
+      if (!unmatched.length) tb4.appendChild(el("tr", {}, [el("td", { colspan: "6", class: "empty", text: "Everything matched for this period." })]));
+      t4.appendChild(tb4);
+      card4.appendChild(el("div", { class: "table-scroll" }, [t4]));
+      if (unmatched.length > 100) card4.appendChild(el("p", { class: "table-note", text: "Showing the 100 largest of " + unmatched.length + " unmatched items." }));
+      tablesWrap.appendChild(card4);
+    }
+
+    refreshReconTables();
   }
 
   // ---------- statements view ----------
@@ -698,9 +1074,16 @@
 
   // ---------- shell ----------
 
+  function renderAllExceptRecon() {
+    renderOverview();
+    renderTracker();
+    renderStatements();
+  }
+
   function renderAll() {
     renderOverview();
     renderTracker();
+    renderReconciliation();
     renderStatements();
     var meta = document.getElementById("data-meta");
     meta.textContent = "Tracker: " + state.tracker.cases.length + " cases · Statements: " +
@@ -747,6 +1130,7 @@
   ]).then(function (payloads) {
     state.tracker = payloads[0];
     state.statements = payloads[1];
+    buildMatches();
     initShell();
     renderAll();
   }).catch(function (err) {
