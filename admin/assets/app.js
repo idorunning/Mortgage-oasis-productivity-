@@ -16,6 +16,7 @@
     recon: loadReconSettings(),
     includeGI: false,
     chases: loadChases(),
+    overrides: loadOverrides(),
     worklistSort: "amount",
   };
 
@@ -26,6 +27,15 @@
 
   function saveChases() {
     try { localStorage.setItem("mo-chases", JSON.stringify(state.chases)); } catch (e) {}
+  }
+
+  function loadOverrides() {
+    try { return JSON.parse(localStorage.getItem("mo-overrides") || "{}"); }
+    catch (e) { return {}; }
+  }
+
+  function saveOverrides() {
+    try { localStorage.setItem("mo-overrides", JSON.stringify(state.overrides)); } catch (e) {}
   }
 
   function loadReconSettings() {
@@ -114,6 +124,7 @@
 
   function caseStatus(c) {
     if (c.commissionReceived != null) return "received";
+    if (overrideFor(c)) return "manual";            // confirmed paid by the owner
     if (c._matchedPaid > 0) return "matched";       // paid per statements, not yet in tracker
     if (c.commissionWritten != null) return "outstanding";
     return "none";
@@ -121,8 +132,40 @@
 
   function effectiveReceived(c) {
     if (c.commissionReceived != null) return c.commissionReceived;
+    var ov = overrideFor(c);
+    if (ov) return ov.amount != null ? ov.amount : (c.commissionWritten || 0);
     if (c._matchedPaid > 0) return c._matchedPaid;
     return null;
+  }
+
+  // ---------- manual override (confirmed paid) ----------
+  // For commission the owner KNOWS has been paid but that isn't on any
+  // statement (or wasn't detected by the matcher): mark the case as paid by
+  // hand. Stored on this device like chases; undo any time from Needs review.
+
+  function overrideFor(c) {
+    return state.overrides[chaseKey(c)] || null;
+  }
+
+  function markPaidManually(c) {
+    var suggested = c.commissionWritten != null ? String(c.commissionWritten.toFixed(2)) : "";
+    var answer = window.prompt(
+      "Confirm commission received for " + (c.client || "this case") +
+      ".\nAmount received (£):", suggested);
+    if (answer === null) return false; // cancelled
+    var amount = parseFloat(String(answer).replace(/[£,\s]/g, ""));
+    if (isNaN(amount)) amount = c.commissionWritten != null ? c.commissionWritten : 0;
+    state.overrides[chaseKey(c)] = {
+      confirmedOn: isoToday(),
+      amount: Math.round(amount * 100) / 100,
+    };
+    saveOverrides();
+    return true;
+  }
+
+  function clearOverride(c) {
+    delete state.overrides[chaseKey(c)];
+    saveOverrides();
   }
 
   function ageDays(iso) {
@@ -537,6 +580,176 @@
     });
   }
 
+  /* Single-series line chart with an area wash — for cumulative totals.
+     cfg: {labels, values, cssVar, height, tipName} */
+  function lineChart(container, cfg) {
+    container.innerHTML = "";
+    var wrap = el("div", { class: "chart-wrap" });
+    container.appendChild(wrap);
+    var tip = makeTip(wrap);
+
+    var n = cfg.labels.length;
+    if (!n) { wrap.appendChild(el("p", { class: "empty", text: "No data for this period." })); return; }
+
+    var height = cfg.height || 240;
+    var pad = { top: 14, right: 18, bottom: 26, left: 52 };
+    var stepX = Math.max(18, 560 / Math.max(n - 1, 1));
+    var plotW = stepX * Math.max(n - 1, 1);
+    var width = plotW + pad.left + pad.right;
+    var plotH = height - pad.top - pad.bottom;
+    var yMax = niceCeil(Math.max.apply(null, cfg.values.concat([1])));
+    var color = css(cfg.cssVar || "--series-1");
+
+    var svg = svgEl("svg", { viewBox: "0 0 " + width + " " + height, width: width, height: height, role: "img" });
+    wrap.appendChild(svg);
+
+    for (var t = 0; t <= 4; t++) {
+      var y = pad.top + plotH - plotH * t / 4;
+      svg.appendChild(svgEl("line", {
+        x1: pad.left, x2: pad.left + plotW, y1: y, y2: y,
+        stroke: t === 0 ? css("--baseline") : css("--grid"), "stroke-width": 1,
+      }));
+      var tickV = yMax * t / 4;
+      var tick = svgEl("text", { x: pad.left - 8, y: y + 4, "text-anchor": "end", fill: css("--muted"), "font-size": 11 });
+      tick.textContent = tickV >= 1000 ? (tickV / 1000) + "K" : String(Math.round(tickV));
+      svg.appendChild(tick);
+    }
+
+    function ptX(i) { return pad.left + i * stepX; }
+    function ptY(i) { return pad.top + plotH * (1 - cfg.values[i] / yMax); }
+
+    var lineD = "", areaD = "M" + ptX(0) + "," + (pad.top + plotH);
+    for (var i = 0; i < n; i++) {
+      lineD += (i ? " L" : "M") + ptX(i) + "," + ptY(i);
+      areaD += " L" + ptX(i) + "," + ptY(i);
+    }
+    areaD += " L" + ptX(n - 1) + "," + (pad.top + plotH) + " Z";
+    svg.appendChild(svgEl("path", { d: areaD, fill: color, opacity: 0.1 }));
+    svg.appendChild(svgEl("path", { d: lineD, fill: "none", stroke: color, "stroke-width": 2,
+      "stroke-linejoin": "round", "stroke-linecap": "round" }));
+    // end marker: surface ring + dot, value label at the end
+    svg.appendChild(svgEl("circle", { cx: ptX(n - 1), cy: ptY(n - 1), r: 6, fill: css("--surface") }));
+    svg.appendChild(svgEl("circle", { cx: ptX(n - 1), cy: ptY(n - 1), r: 4, fill: color }));
+    var endLabel = svgEl("text", {
+      x: ptX(n - 1) - 6, y: ptY(n - 1) - 10, "text-anchor": "end",
+      fill: css("--ink-2"), "font-size": 12, "font-weight": 600,
+    });
+    endLabel.textContent = gbp(cfg.values[n - 1], { compact: true });
+    svg.appendChild(endLabel);
+
+    // x labels, thinned
+    var every = Math.max(1, Math.ceil(52 / stepX));
+    for (var xi = 0; xi < n; xi += every) {
+      var xl = svgEl("text", { x: ptX(xi), y: height - 8, "text-anchor": "middle", fill: css("--muted"), "font-size": 11 });
+      xl.textContent = cfg.labels[xi];
+      svg.appendChild(xl);
+    }
+
+    // crosshair + tooltip
+    var cross = svgEl("line", { y1: pad.top, y2: pad.top + plotH, stroke: css("--baseline"), "stroke-width": 1, opacity: 0 });
+    svg.appendChild(cross);
+    var hit = svgEl("rect", { x: pad.left, y: pad.top, width: plotW, height: plotH, fill: "transparent" });
+    hit.addEventListener("mousemove", function (ev) {
+      var rect = wrap.getBoundingClientRect();
+      var mx = ev.clientX - rect.left + wrap.scrollLeft;
+      var i = Math.max(0, Math.min(n - 1, Math.round((mx - pad.left) / stepX)));
+      cross.setAttribute("x1", ptX(i)); cross.setAttribute("x2", ptX(i));
+      cross.setAttribute("opacity", 1);
+      tip.show(tipRows(cfg.labels[i], [{ name: cfg.tipName || "Total", color: color, value: gbp(cfg.values[i]) }]),
+        ev.clientX - rect.left + wrap.scrollLeft, ev.clientY - rect.top);
+    });
+    hit.addEventListener("mouseleave", function () { cross.setAttribute("opacity", 0); tip.hide(); });
+    svg.appendChild(hit);
+  }
+
+  /* Stacked column chart (positive values only) with 2px surface gaps between
+     segments; only the top segment of each stack gets the rounded data-end.
+     cfg: {labels, series: [{name, cssVar, values}], height, tipTitle} */
+  function stackedChart(container, cfg) {
+    container.innerHTML = "";
+    var wrap = el("div", { class: "chart-wrap" });
+    container.appendChild(wrap);
+    var tip = makeTip(wrap);
+
+    var n = cfg.labels.length;
+    if (!n) { wrap.appendChild(el("p", { class: "empty", text: "No data for this period." })); return; }
+
+    var height = cfg.height || 260;
+    var pad = { top: 14, right: 12, bottom: 26, left: 52 };
+    var groupWidth = Math.max(30, 560 / n);
+    var plotW = n * groupWidth;
+    var width = plotW + pad.left + pad.right;
+    var plotH = height - pad.top - pad.bottom;
+
+    var totals = cfg.labels.map(function (_, i) {
+      return cfg.series.reduce(function (a, s) { return a + Math.max(0, s.values[i] || 0); }, 0);
+    });
+    var yMax = niceCeil(Math.max.apply(null, totals.concat([1])));
+
+    var svg = svgEl("svg", { viewBox: "0 0 " + width + " " + height, width: width, height: height, role: "img" });
+    wrap.appendChild(svg);
+
+    for (var t = 0; t <= 4; t++) {
+      var y = pad.top + plotH - plotH * t / 4;
+      svg.appendChild(svgEl("line", {
+        x1: pad.left, x2: pad.left + plotW, y1: y, y2: y,
+        stroke: t === 0 ? css("--baseline") : css("--grid"), "stroke-width": 1,
+      }));
+      var tickV = yMax * t / 4;
+      var tick = svgEl("text", { x: pad.left - 8, y: y + 4, "text-anchor": "end", fill: css("--muted"), "font-size": 11 });
+      tick.textContent = tickV >= 1000 ? (tickV / 1000) + "K" : String(Math.round(tickV));
+      svg.appendChild(tick);
+    }
+
+    var barW = Math.min(24, groupWidth - 8);
+    cfg.labels.forEach(function (label, i) {
+      var gx = pad.left + i * groupWidth;
+      var every = Math.max(1, Math.ceil(52 / groupWidth));
+      if (i % every === 0) {
+        var xl = svgEl("text", { x: gx + groupWidth / 2, y: height - 8, "text-anchor": "middle", fill: css("--muted"), "font-size": 11 });
+        xl.textContent = label;
+        svg.appendChild(xl);
+      }
+      var x = gx + (groupWidth - barW) / 2;
+      var yCursor = pad.top + plotH; // build the stack bottom-up
+      var segs = cfg.series.map(function (s) { return Math.max(0, s.values[i] || 0); });
+      var topIdx = -1;
+      segs.forEach(function (v, si) { if (v > 0) topIdx = si; });
+      segs.forEach(function (v, si) {
+        if (v <= 0) return;
+        var h = Math.max(1.5, plotH * v / yMax);
+        var yTop = yCursor - h;
+        if (si === topIdx) {
+          var r = Math.min(4, h / 2);
+          svg.appendChild(svgEl("path", { d:
+            "M" + x + "," + yCursor +
+            " L" + x + "," + (yTop + r) +
+            " Q" + x + "," + yTop + " " + (x + r) + "," + yTop +
+            " L" + (x + barW - r) + "," + yTop +
+            " Q" + (x + barW) + "," + yTop + " " + (x + barW) + "," + (yTop + r) +
+            " L" + (x + barW) + "," + yCursor + " Z",
+            fill: css(cfg.series[si].cssVar) }));
+        } else {
+          svg.appendChild(svgEl("rect", { x: x, y: yTop, width: barW, height: h, fill: css(cfg.series[si].cssVar) }));
+        }
+        yCursor = yTop - 2; // 2px surface gap between segments
+      });
+
+      var hit = svgEl("rect", { x: gx, y: pad.top, width: groupWidth, height: plotH, fill: "transparent" });
+      hit.addEventListener("mousemove", function (ev) {
+        var rows = cfg.series.map(function (s) {
+          return { name: s.name, color: css(s.cssVar), value: gbp(s.values[i] || 0) };
+        });
+        rows.push({ name: "Total", color: css("--muted"), value: gbp(totals[i]) });
+        var rect = wrap.getBoundingClientRect();
+        tip.show(tipRows(cfg.tipTitle ? cfg.tipTitle(i) : label, rows),
+          ev.clientX - rect.left + wrap.scrollLeft, ev.clientY - rect.top);
+      });
+      hit.addEventListener("mouseleave", tip.hide);
+      svg.appendChild(hit);
+    });
+  }
+
   function legend(series) {
     return el("div", { class: "legend" }, series.map(function (s) {
       return el("span", { class: "key" }, [
@@ -612,6 +825,73 @@
         { name: "Written (predicted)", cssVar: "--series-2", values: months.map(function (m) { return (byMonth[m] || {}).written || 0; }) },
         { name: "Received", cssVar: "--series-1", values: months.map(function (m) { return (byMonth[m] || {}).received || 0; }) },
       ],
+    });
+
+    // cumulative statement income + monthly business mix
+    var twoNew = el("div", { class: "two-col" });
+    root.appendChild(twoNew);
+
+    var byStmtMonthCum = {};
+    stmts.forEach(function (s) {
+      var k = monthKey(s.date);
+      byStmtMonthCum[k] = (byStmtMonthCum[k] || 0) + s.total;
+    });
+    var cumMonths = monthRange(Object.keys(byStmtMonthCum));
+    var running = 0;
+    var cumValues = cumMonths.map(function (m) { running += byStmtMonthCum[m] || 0; return Math.round(running * 100) / 100; });
+    var cardCum = el("div", { class: "card" });
+    cardCum.appendChild(el("div", { class: "card-head" }, [
+      el("div", {}, [
+        el("h2", { text: "Cumulative statement income" }),
+        el("div", { class: "sub", text: "Running total of everything the network has paid, month by month." }),
+      ]),
+    ]));
+    var chartCum = el("div");
+    cardCum.appendChild(chartCum);
+    twoNew.appendChild(cardCum);
+    lineChart(chartCum, {
+      labels: cumMonths.map(monthLabel),
+      values: cumValues,
+      tipName: "Paid to date",
+      height: 250,
+    });
+
+    // fixed palette-order segments; anything else folds into Other
+    var MIX_SEGMENTS = [
+      { key: "Mortgage", cssVar: "--series-1" },
+      { key: "Protection", cssVar: "--series-2" },
+      { key: "General Insurance", cssVar: "--series-3" },
+      { key: "Other", cssVar: "--series-4" },
+    ];
+    var mixByMonth = {};
+    cases.forEach(function (c) {
+      var k = monthKey(c.date);
+      if (!k || !(c.commissionWritten > 0)) return;
+      var seg = (c.segment === "Mortgage" || c.segment === "Protection" || c.segment === "General Insurance") ? c.segment : "Other";
+      mixByMonth[k] = mixByMonth[k] || {};
+      mixByMonth[k][seg] = (mixByMonth[k][seg] || 0) + c.commissionWritten;
+    });
+    var mixMonths = monthRange(Object.keys(mixByMonth));
+    var cardMix = el("div", { class: "card" });
+    cardMix.appendChild(el("div", { class: "card-head" }, [
+      el("div", {}, [
+        el("h2", { text: "Business mix by month" }),
+        el("div", { class: "sub", text: "Commission written each month, stacked by business type." }),
+      ]),
+      el("div", { class: "spacer" }),
+      legend(MIX_SEGMENTS.map(function (s) { return { name: s.key, cssVar: s.cssVar }; })),
+    ]));
+    var chartMix = el("div");
+    cardMix.appendChild(chartMix);
+    twoNew.appendChild(cardMix);
+    stackedChart(chartMix, {
+      labels: mixMonths.map(monthLabel),
+      height: 250,
+      tipTitle: function (i) { return monthLabel(mixMonths[i]); },
+      series: MIX_SEGMENTS.map(function (s) {
+        return { name: s.key, cssVar: s.cssVar,
+          values: mixMonths.map(function (m) { return (mixByMonth[m] || {})[s.key] || 0; }) };
+      }),
     });
 
     // statement income by month + segment split
@@ -757,7 +1037,8 @@
     admSel.addEventListener("change", function () { f.admin = admSel.value; renderTracker(); });
     var statSel = el("select", { class: "select", "aria-label": "Status" });
     [["all", "Any status"], ["received", "Commission received"],
-     ["matched", "Paid per statements"], ["outstanding", "Awaiting commission"],
+     ["matched", "Paid per statements"], ["manual", "Paid (manual override)"],
+     ["outstanding", "Awaiting commission"],
      ["none", "No commission recorded"]].forEach(function (p) {
       var opt = el("option", { value: p[0], text: p[1] });
       if (p[0] === f.status) opt.selected = true;
@@ -793,6 +1074,8 @@
       var status = caseStatus(c);
       var badge = status === "received"
         ? el("span", { class: "badge ok", text: "Received" })
+        : status === "manual"
+          ? el("span", { class: "badge stmt", text: "Paid (manual)", title: "Confirmed by hand: " + gbp(effectiveReceived(c)) })
         : status === "matched"
           ? el("span", { class: "badge stmt", text: "Paid (stmt)", title: "Matched to statement payment of " + gbp(c._matchedPaid) })
           : status === "outstanding"
@@ -986,7 +1269,7 @@
           class: "chase-meta",
           text: "Chased " + shortDate(chase.chasedOn) + " · follow up " + shortDate(chase.followUpDue),
         }));
-        var actionCell = el("td", {});
+        var actionCell = el("td", { class: "action-cell" });
         if (isOverdue(c)) {
           var btn = el("button", { class: "chase-btn", text: chase ? "Chase again" : "Chase" });
           btn.addEventListener("click", function () {
@@ -996,6 +1279,15 @@
           });
           actionCell.appendChild(btn);
         }
+        var paidBtn = el("button", {
+          class: "chase-btn quiet",
+          text: "Mark paid",
+          title: "Commission confirmed received but not showing on a statement — record it by hand",
+        });
+        paidBtn.addEventListener("click", function () {
+          if (markPaidManually(c)) { renderAllExceptRecon(); refreshReconTables(); }
+        });
+        actionCell.appendChild(paidBtn);
         tb1.appendChild(el("tr", {}, [
           el("td", { text: c.date || "—" }),
           el("td", { text: c.client || "—", title: c.property || "" }),
@@ -1096,6 +1388,47 @@
         t3.appendChild(tb3);
         card3.appendChild(el("div", { class: "table-scroll" }, [t3]));
         tablesWrap.appendChild(card3);
+      }
+
+      // manual overrides in force for this period
+      var manualCases = cases.filter(function (c) { return caseStatus(c) === "manual"; });
+      if (manualCases.length) {
+        var cardM = el("div", { class: "card" });
+        cardM.appendChild(el("div", { class: "card-head" }, [
+          el("div", {}, [
+            el("h2", { text: "Manually confirmed as paid" }),
+            el("div", { class: "sub", text: "Cases you've marked as paid by hand (no statement match, nothing in the tracker's Commission Received column). Undo removes the override; the case returns to the worklist." }),
+          ]),
+        ]));
+        var tM = el("table", { class: "data" });
+        tM.appendChild(el("thead", {}, [el("tr", {}, [
+          el("th", { text: "Date" }), el("th", { text: "Client" }), el("th", { text: "Provider" }),
+          el("th", { class: "num", text: "Predicted" }), el("th", { class: "num", text: "Confirmed amount" }),
+          el("th", { text: "Confirmed on" }), el("th", { text: "" }),
+        ])]));
+        var tbM = el("tbody");
+        manualCases.slice().sort(function (a, b) { return (b.date || "").localeCompare(a.date || ""); })
+          .forEach(function (c) {
+            var ov = overrideFor(c);
+            var undo = el("button", { class: "chase-btn quiet", text: "Undo" });
+            undo.addEventListener("click", function () {
+              clearOverride(c);
+              renderAllExceptRecon();
+              refreshReconTables();
+            });
+            tbM.appendChild(el("tr", {}, [
+              el("td", { text: c.date || "—" }),
+              el("td", { text: c.client || "—", title: c.property || "" }),
+              el("td", { text: c.provider || "—" }),
+              el("td", { class: "num", text: c.commissionWritten != null ? gbp(c.commissionWritten) : "—" }),
+              el("td", { class: "num pos", text: gbp(effectiveReceived(c)) }),
+              el("td", { text: ov ? ov.confirmedOn : "—" }),
+              el("td", {}, [undo]),
+            ]));
+          });
+        tM.appendChild(tbM);
+        cardM.appendChild(el("div", { class: "table-scroll" }, [tM]));
+        tablesWrap.appendChild(cardM);
       }
 
       // unmatched statement money (non-trail) for the selected period
@@ -1407,6 +1740,204 @@
 
     var refreshBtn = document.getElementById("refresh-btn");
     if (refreshBtn) refreshBtn.addEventListener("click", runRefresh);
+    var backupBtn = document.getElementById("backup-btn");
+    if (backupBtn) backupBtn.addEventListener("click", downloadBackup);
+    var reportBtn = document.getElementById("report-btn");
+    if (reportBtn) reportBtn.addEventListener("click", openPrintReport);
+    var xlsxBtn = document.getElementById("report-xlsx-btn");
+    if (xlsxBtn) xlsxBtn.addEventListener("click", downloadXlsxReport);
+  }
+
+  // ---------- backup & reports ----------
+
+  function downloadBlob(blob, filename) {
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  }
+
+  // Full backup: both datasets plus everything stored on this device
+  // (chases, manual overrides, thresholds) in one dated JSON file.
+  function downloadBackup() {
+    var payload = {
+      exportedAt: new Date().toISOString(),
+      app: "Mortgage Oasis dashboard backup",
+      tracker: state.tracker,
+      statements: state.statements,
+      local: { chases: state.chases, overrides: state.overrides, settings: state.recon },
+    };
+    downloadBlob(new Blob([JSON.stringify(payload, null, 1)], { type: "application/json" }),
+      "MortgageOasis-Backup-" + isoToday() + ".json");
+  }
+
+  // One set of report rows feeds both the PDF (print) report and the Excel
+  // report — so every export shows exactly what the dashboard shows.
+  function buildReportData() {
+    var cases = filteredCases();
+    var stmts = filteredStatements();
+    var outstanding = cases.filter(function (c) { return caseStatus(c) === "outstanding"; });
+    var overdue = outstanding.filter(isOverdue);
+    var written = 0, paid = 0, fees = 0;
+    cases.forEach(function (c) {
+      written += c.commissionWritten || 0;
+      paid += effectiveReceived(c) || 0;
+      fees += c.brokerFee || 0;
+    });
+    var stmtTotal = stmts.reduce(function (a, s) { return a + s.total; }, 0);
+    var outstandingSum = outstanding.reduce(function (a, c) { return a + (c.commissionWritten || 0); }, 0);
+
+    var byMonth = {};
+    stmts.forEach(function (s) {
+      var k = monthKey(s.date);
+      byMonth[k] = byMonth[k] || { income: 0, ni: 0, r: 0 };
+      byMonth[k].income += s.total;
+      s.items.forEach(function (it) {
+        if (it.class === "NI") byMonth[k].ni += it.amount;
+        if (it.class === "R") byMonth[k].r += it.amount;
+      });
+    });
+    var months = monthRange(Object.keys(byMonth));
+
+    var variance = cases.filter(isVarianceFlagged).map(function (c) {
+      return {
+        date: c.date, client: c.client, provider: c.provider,
+        predicted: c.commissionWritten, paid: effectiveReceived(c),
+        shortfall: Math.round(((c.commissionWritten || 0) - (effectiveReceived(c) || 0)) * 100) / 100,
+        variancePct: Math.round(variancePct(c)),
+        via: c.commissionReceived != null ? "Tracker" : (overrideFor(c) ? "Manual" : "Statement match"),
+      };
+    }).sort(function (a, b) { return Math.abs(b.shortfall) - Math.abs(a.shortfall); });
+
+    return {
+      generatedAt: new Date().toISOString(),
+      period: state.year === "all" ? "All years" : state.year,
+      thresholds: { overdueDays: state.recon.days, variancePct: state.recon.variancePct },
+      summary: [
+        ["Commission written (predicted)", written],
+        ["Commission paid (tracker + statements + manual)", paid],
+        ["Outstanding to chase", outstandingSum],
+        ["Overdue (> " + state.recon.days + " days)", overdue.reduce(function (a, c) { return a + (c.commissionWritten || 0); }, 0)],
+        ["Statement income", stmtTotal],
+        ["Broker fees", fees],
+        ["Cases", cases.length],
+        ["Outstanding cases", outstanding.length],
+        ["Overdue cases", overdue.length],
+      ],
+      outstanding: outstanding.slice().sort(function (a, b) { return (a.date || "").localeCompare(b.date || ""); })
+        .map(function (c) {
+          var chase = chaseFor(c);
+          return {
+            date: c.date, client: c.client, business: c.business || c.segment,
+            provider: c.provider, predicted: c.commissionWritten,
+            days: ageDays(c.date),
+            status: isFollowUpDue(c) ? "Follow up due" : (isOverdue(c) ? "Overdue" : "Awaiting"),
+            chasedOn: chase ? chase.chasedOn : null,
+            followUpDue: chase ? chase.followUpDue : null,
+          };
+        }),
+      variance: variance,
+      monthly: months.map(function (m) {
+        var row = byMonth[m] || { income: 0, ni: 0, r: 0 };
+        return { month: monthLabel(m), income: Math.round(row.income * 100) / 100,
+                 ni: Math.round(row.ni * 100) / 100, r: Math.round(row.r * 100) / 100 };
+      }),
+    };
+  }
+
+  // PDF report: a print-styled window built from the live data plus copies of
+  // the dashboard's own charts; the browser's Print → Save as PDF does the rest.
+  function openPrintReport() {
+    var data = buildReportData();
+    var win = window.open("", "_blank");
+    if (!win) return;
+
+    function tableHtml(headers, rows, numericFrom) {
+      return "<table><thead><tr>" + headers.map(function (h, i) {
+        return "<th" + (i >= numericFrom ? ' class="num"' : "") + ">" + esc(h) + "</th>";
+      }).join("") + "</tr></thead><tbody>" + rows.map(function (r) {
+        return "<tr>" + r.map(function (v, i) {
+          return "<td" + (i >= numericFrom ? ' class="num"' : "") + ">" + esc(v == null ? "—" : v) + "</td>";
+        }).join("") + "</tr>";
+      }).join("") + "</tbody></table>";
+    }
+
+    var charts = "";
+    ["view-overview"].forEach(function (viewId) {
+      var view = document.getElementById(viewId);
+      view.querySelectorAll(".card").forEach(function (card) {
+        var svg = card.querySelector("svg");
+        var title = card.querySelector("h2");
+        if (svg && title && /written vs received|Cumulative/.test(title.textContent)) {
+          charts += '<div class="chart-block"><h3>' + esc(title.textContent) + "</h3>" +
+            '<div class="chart-scroll">' + svg.outerHTML + "</div></div>";
+        }
+      });
+    });
+
+    var html = "<!DOCTYPE html><html><head><meta charset='utf-8'>" +
+      "<title>Mortgage Oasis — Commission report</title><style>" +
+      "body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;color:#0b0b0b;margin:32px;max-width:900px}" +
+      "h1{font-size:22px;margin:0}h2{font-size:15px;margin:26px 0 8px;border-bottom:1px solid #c3c2b7;padding-bottom:4px}" +
+      "h3{font-size:13px;margin:14px 0 6px}.meta{color:#52514e;font-size:12.5px;margin-top:4px}" +
+      "table{width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px}" +
+      "th{font-weight:600;text-align:left;color:#52514e;border-bottom:1px solid #c3c2b7;padding:4px 6px}" +
+      "td{padding:3.5px 6px;border-bottom:1px solid #e1e0d9;vertical-align:top}" +
+      "th.num,td.num{text-align:right;font-variant-numeric:tabular-nums}" +
+      ".chart-block{margin-top:10px}.chart-scroll{overflow:hidden}svg{max-width:100%;height:auto}" +
+      ".print-btn{position:fixed;top:14px;right:14px;font:inherit;font-size:13px;padding:8px 16px;" +
+      "border:1px solid #2a78d6;color:#2a78d6;background:#fff;border-radius:8px;cursor:pointer}" +
+      "@media print{.print-btn{display:none}body{margin:0}h2{page-break-after:avoid}table{page-break-inside:auto}tr{page-break-inside:avoid}}" +
+      "</style></head><body>" +
+      "<button class='print-btn' onclick='window.print()'>Print / Save as PDF</button>" +
+      "<h1>Mortgage Oasis — Commission report</h1>" +
+      "<p class='meta'>Period: " + esc(data.period) + " · Generated " + esc(data.generatedAt.slice(0, 10)) +
+      " · Overdue after " + data.thresholds.overdueDays + " days · Variance threshold " + data.thresholds.variancePct + "%</p>" +
+      "<h2>Summary</h2>" +
+      tableHtml(["Measure", "Value"], data.summary.map(function (row) {
+        return [row[0], typeof row[1] === "number" && row[0].indexOf("ases") === -1 ? gbp(row[1]) : String(row[1])];
+      }), 1) +
+      charts +
+      "<h2>Outstanding commission (oldest first)</h2>" +
+      tableHtml(["Date", "Client", "Business", "Provider", "Predicted", "Days", "Status", "Chased", "Follow-up"],
+        data.outstanding.map(function (r) {
+          return [r.date, r.client, r.business, r.provider, gbp(r.predicted), r.days, r.status, r.chasedOn, r.followUpDue];
+        }), 4) +
+      "<h2>Paid vs predicted — variance flags</h2>" +
+      tableHtml(["Date", "Client", "Provider", "Predicted", "Paid", "Shortfall", "Variance", "Paid via"],
+        data.variance.map(function (r) {
+          return [r.date, r.client, r.provider, gbp(r.predicted), gbp(r.paid), gbp(r.shortfall), r.variancePct + "%", r.via];
+        }), 3) +
+      "<h2>Monthly income</h2>" +
+      tableHtml(["Month", "Statement income", "Non-indemnity (NI)", "Recurring (R)"],
+        data.monthly.map(function (r) { return [r.month, gbp(r.income), gbp(r.ni), gbp(r.r)]; }), 1) +
+      "</body></html>";
+    win.document.write(html);
+    win.document.close();
+  }
+
+  // Excel report: the same rows, formatted server-side by openpyxl.
+  function downloadXlsxReport() {
+    var status = document.getElementById("refresh-status");
+    var data = buildReportData();
+    fetch("/api/report", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Requested-With": "dashboard" },
+      body: JSON.stringify(data),
+    }).then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.blob();
+    }).then(function (blob) {
+      downloadBlob(blob, "MortgageOasis-Report-" + isoToday() + ".xlsx");
+    }).catch(function (err) {
+      if (status) {
+        status.className = "refresh-status err";
+        status.textContent = "Excel report needs the local app (run-dashboard) — use the PDF report instead";
+      }
+      console.error(err);
+    });
   }
 
   // Ask the local server (Workstream A) to pull the latest Tracker + statements

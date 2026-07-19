@@ -66,7 +66,10 @@ class Handler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def do_POST(self):
-        if self.path.split("?")[0] != "/api/refresh":
+        route = self.path.split("?")[0]
+        if route == "/api/report":
+            return self._report()
+        if route != "/api/refresh":
             return self._json(404, {"ok": False, "error": "Not found"})
         if not _same_origin(self):
             return self._json(403, {"ok": False, "error": "Cross-site request refused"})
@@ -86,6 +89,26 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(500, {"ok": False, "error": "%s: %s" % (type(err).__name__, err)})
         finally:
             _refresh_lock.release()
+
+    def _report(self):
+        """Format the dashboard's own report rows into a styled .xlsx."""
+        if not _same_origin(self):
+            return self._json(403, {"ok": False, "error": "Cross-site request refused"})
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            data = json.loads(self.rfile.read(length) or b"{}")
+            import report_xlsx
+            body = report_xlsx.build_report(data)
+            self.send_response(200)
+            self.send_header("Content-Type",
+                             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            self.send_header("Content-Disposition",
+                             'attachment; filename="MortgageOasis-Report.xlsx"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as err:
+            self._json(500, {"ok": False, "error": "%s: %s" % (type(err).__name__, err)})
 
     def log_message(self, fmt, *args):
         pass  # keep the console quiet

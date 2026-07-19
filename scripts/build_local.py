@@ -88,6 +88,9 @@ def main():
     <button class="tab" data-view="statements">Statements</button>
   </nav>
   <div class="topbar-right">
+    <span id="refresh-status" class="refresh-status"></span>
+    <button id="backup-btn" class="icon-btn" title="Download a full backup (data + chase history + overrides) as JSON">Backup</button>
+    <button id="report-btn" class="icon-btn" title="Open a formatted report to print or save as PDF">PDF report</button>
     <select id="year-filter" class="select" aria-label="Year filter">
       <option value="all">All years</option>
     </select>
