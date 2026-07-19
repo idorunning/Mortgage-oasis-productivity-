@@ -1,6 +1,20 @@
-# Mortgage Oasis — website & admin dashboard
+# Mortgage Oasis — commission dashboard
 
-Static website for Mortgage Oasis with a commission dashboard at `/admin`.
+Commission dashboard for Mortgage Oasis. **Distributed as a local file, not
+hosted** — for data-control reasons the client data must stay on the owner's
+own machine (or a private synced folder), so the deliverable is a single
+self-contained HTML file:
+
+```bash
+python3 scripts/build_local.py       # -> MortgageOasis-Dashboard.html
+```
+
+Double-click `MortgageOasis-Dashboard.html` to open it — no server, no
+internet needed. Keep it in a Google Drive / OneDrive synced folder if you
+want it backed up; open the synced local copy via Drive for desktop (Drive's
+web preview doesn't run JavaScript). Rebuild and replace the file after each
+data refresh. The repo also contains the same dashboard as a small static
+site (below) for development.
 
 ## Structure
 
@@ -94,15 +108,19 @@ overdue flags, and appear in the reconciliation tables.
    python3 scripts/merge_statements.py statements_2024.json statements_2025.json statements_2026.json -o data/statements.json
    ```
 
-## ⚠️ Before the website goes live
+## ⚠️ Data protection — keep it local
 
-The admin page is **deliberately not password-protected yet** (dashboard-first,
-auth later, as agreed). `data/*.json` contains client names, addresses and
-commission amounts, so before pointing a public domain at this site:
+`data/*.json` (and the built HTML file) contain client names, addresses and
+commission amounts. **Do not deploy this dashboard or its data to any public
+website or hosting service.** The intended distribution is the single local
+HTML file above, kept on the owner's own machines / private synced storage,
+plus this private repository.
 
-1. Add hosting-level protection on `/admin/*` **and** `/data/*`
-   (Netlify basic auth / Cloudflare Access / nginx `auth_basic` — see the notes
-   in `admin/assets/auth.js`). A client-side password alone is not enough,
-   because the JSON files would still be directly downloadable.
-2. Optionally enable the client-side gate in `admin/assets/auth.js` as a
-   convenience second layer.
+If hosting is ever reconsidered, it must come with hosting-level access
+control on the whole site (see the notes in `admin/assets/auth.js` — a
+client-side password alone is not enough, since the JSON files would still be
+directly downloadable).
+
+Note: the Chase button never sends email. It only opens a Gmail **compose**
+window with the message pre-filled; nothing goes anywhere until you press
+Send yourself.
