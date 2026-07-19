@@ -31,8 +31,31 @@ Three views, all filterable by year (top-right):
 - **Commission tracker** — every case from the Business Register tabs with
   search and filters (business type, administrator, status). "Written" is the
   predicted commission; "Received" is what has actually come in.
+- **Reconciliation** — matches statement payments to tracker cases
+  automatically (by client surname, provider, amount and date) and highlights:
+  - **Outstanding** commission (written, nothing paid yet)
+  - **Overdue** — outstanding longer than the *time limit* slider
+  - **Variance flags** — paid amount differing from predicted by more than the
+    *variance* slider
+  - Payments on statements with no tracker match, and statement-matched
+    payments not yet recorded in the sheet's Commission Received column
+
+  Both thresholds are sliding scales on the Reconciliation view; they apply
+  across the dashboard (the tracker table shows the same Overdue/variance
+  badges) and are remembered per device.
 - **Statements** — weekly consolidation statements with monthly totals and
   per-statement line items (click a row to expand).
+
+## Monthly routine: dropping in new statements
+
+1. File the new weekly statement workbooks in Drive under
+   `commision/Statements/<year>/<month>` as usual.
+2. Re-run the extraction for that year and re-merge (step 2 below).
+3. Publish the updated `data/statements.json`.
+
+That's it — matching happens in the browser when the page loads, so new
+payments automatically flip cases from *Awaiting* to *Paid (stmt)*, clear
+overdue flags, and appear in the reconciliation tables.
 
 ## Refreshing the data
 
