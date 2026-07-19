@@ -29,11 +29,19 @@ def main():
             payload = json.load(fh)
         statements.extend(payload["statements"])
 
-    # De-duplicate on filename (same statement filed in two folders), keep order by date
+    # De-duplicate: same filename (statement filed twice), or an identical
+    # statement saved under a "(1)"-style copy name (same date, total and
+    # item count). Prefer the shortest filename of each duplicate group.
     seen = {}
     for s in statements:
-        seen[s["file"]] = s
+        key = (s["date"], round(s["total"], 2), len(s["items"]))
+        prev = seen.get(key)
+        if prev is None or (len(s["file"]), s["file"]) < (len(prev["file"]), prev["file"]):
+            seen[key] = s
     merged = sorted(seen.values(), key=lambda s: (s["date"], s["file"]))
+    dropped = len(statements) - len(merged)
+    if dropped:
+        print(f"note: dropped {dropped} duplicate statement(s)")
 
     result = {
         "generatedAt": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
