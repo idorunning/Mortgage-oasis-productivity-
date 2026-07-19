@@ -45,7 +45,8 @@
     if (opts.compact && abs >= 10000) {
       return sign + "£" + (abs / 1000).toFixed(1).replace(/\.0$/, "") + "K";
     }
-    var dp = abs >= 1000 ? 0 : (opts.dp != null ? opts.dp : 2);
+    // Tables and tooltips show exact pence; only compact (KPI/chart) displays round.
+    var dp = opts.compact ? 0 : (opts.dp != null ? opts.dp : 2);
     return sign + "£" + abs.toLocaleString("en-GB", { minimumFractionDigits: dp, maximumFractionDigits: dp });
   }
 
@@ -124,10 +125,17 @@
     };
   }
 
+  function esc(text) {
+    return String(text).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  // Spreadsheet-sourced strings pass through here into innerHTML — escape them.
   function tipRows(title, rows) {
-    return '<div class="tip-title">' + title + "</div>" + rows.map(function (r) {
+    return '<div class="tip-title">' + esc(title) + "</div>" + rows.map(function (r) {
       return '<div class="tip-row"><span class="swatch" style="width:8px;height:8px;border-radius:2px;background:' +
-        r.color + '"></span>' + r.name + "<b>" + r.value + "</b></div>";
+        esc(r.color) + '"></span>' + esc(r.name) + "<b>" + esc(r.value) + "</b></div>";
     }).join("");
   }
 
@@ -149,30 +157,41 @@
     var width = plotW + pad.left + pad.right;
     var plotH = height - pad.top - pad.bottom;
 
-    var maxVal = 0;
+    var maxVal = 0, minVal = 0;
     cfg.series.forEach(function (s) {
-      s.values.forEach(function (v) { if (v != null && v > maxVal) maxVal = v; });
+      s.values.forEach(function (v) {
+        if (v == null) return;
+        if (v > maxVal) maxVal = v;
+        if (v < minVal) minVal = v;
+      });
     });
     var yMax = niceCeil(maxVal || 1);
+    var yMin = minVal < 0 ? -niceCeil(-minVal) : 0;
+    var span = yMax - yMin;
+    function yFor(v) { return pad.top + plotH * (yMax - v) / span; }
+    var zeroY = yFor(0);
 
     var svg = svgEl("svg", { viewBox: "0 0 " + width + " " + height, width: width, height: height, role: "img" });
     wrap.appendChild(svg);
 
-    // gridlines + ticks (4 divisions)
-    for (var t = 0; t <= 4; t++) {
-      var yv = yMax * t / 4;
-      var y = pad.top + plotH - (plotH * t / 4);
+    // gridlines + ticks: clean steps across the span, always including zero
+    var step = niceCeil(span / 4);
+    var tickVals = [];
+    for (var tv = Math.ceil(yMin / step) * step; tv <= yMax + 1e-9; tv += step) tickVals.push(tv);
+    if (tickVals.indexOf(0) === -1) tickVals.push(0);
+    tickVals.forEach(function (yv) {
+      var y = yFor(yv);
       svg.appendChild(svgEl("line", {
         x1: pad.left, x2: pad.left + plotW, y1: y, y2: y,
-        stroke: t === 0 ? css("--baseline") : css("--grid"), "stroke-width": 1,
+        stroke: yv === 0 ? css("--baseline") : css("--grid"), "stroke-width": 1,
       }));
       var tick = svgEl("text", {
         x: pad.left - 8, y: y + 4, "text-anchor": "end",
         fill: css("--muted"), "font-size": 11,
       });
-      tick.textContent = yv >= 1000 ? (yv / 1000) + "K" : String(Math.round(yv));
+      tick.textContent = Math.abs(yv) >= 1000 ? (yv / 1000) + "K" : String(Math.round(yv));
       svg.appendChild(tick);
-    }
+    });
 
     var barW = Math.min(24, groupWidth / cfg.series.length - 4);
     cfg.labels.forEach(function (label, i) {
@@ -191,19 +210,29 @@
       var startX = gx + (groupWidth - totalBars) / 2;
       cfg.series.forEach(function (s, si) {
         var v = s.values[i];
-        if (v == null || v <= 0) return;
-        var h = Math.max(2, plotH * v / yMax);
+        if (v == null || v === 0) return;
         var x = startX + si * (barW + 2);
-        var y0 = pad.top + plotH - h;
+        var h = Math.max(2, plotH * Math.abs(v) / span);
         var r = Math.min(4, h / 2);
-        var path = "M" + x + "," + (pad.top + plotH) +
-          " L" + x + "," + (y0 + r) +
-          " Q" + x + "," + y0 + " " + (x + r) + "," + y0 +
-          " L" + (x + barW - r) + "," + y0 +
-          " Q" + (x + barW) + "," + y0 + " " + (x + barW) + "," + (y0 + r) +
-          " L" + (x + barW) + "," + (pad.top + plotH) + " Z";
-        var bar = svgEl("path", { d: path, fill: css(s.cssVar) });
-        svg.appendChild(bar);
+        var path;
+        if (v > 0) {
+          var y0 = zeroY - h;
+          path = "M" + x + "," + zeroY +
+            " L" + x + "," + (y0 + r) +
+            " Q" + x + "," + y0 + " " + (x + r) + "," + y0 +
+            " L" + (x + barW - r) + "," + y0 +
+            " Q" + (x + barW) + "," + y0 + " " + (x + barW) + "," + (y0 + r) +
+            " L" + (x + barW) + "," + zeroY + " Z";
+        } else {
+          var y1 = zeroY + h; // rounded data-end points down for debits
+          path = "M" + x + "," + zeroY +
+            " L" + x + "," + (y1 - r) +
+            " Q" + x + "," + y1 + " " + (x + r) + "," + y1 +
+            " L" + (x + barW - r) + "," + y1 +
+            " Q" + (x + barW) + "," + y1 + " " + (x + barW) + "," + (y1 - r) +
+            " L" + (x + barW) + "," + zeroY + " Z";
+        }
+        svg.appendChild(svgEl("path", { d: path, fill: css(s.cssVar) }));
       });
       // hover hit target for the whole group
       var hit = svgEl("rect", {
@@ -382,7 +411,7 @@
       height: 240,
       tipTitle: function (i) { return monthLabel(sMonths[i]); },
       series: [
-        { name: "Paid", cssVar: "--series-1", values: sMonths.map(function (m) { return Math.max(0, byStmtMonth[m] || 0); }) },
+        { name: "Paid", cssVar: "--series-1", values: sMonths.map(function (m) { return byStmtMonth[m] || 0; }) },
       ],
     });
 
@@ -606,7 +635,7 @@
       labels: months.map(monthLabel),
       tipTitle: function (i) { return monthLabel(months[i]); },
       series: [
-        { name: "Paid", cssVar: "--series-1", values: months.map(function (m) { return Math.max(0, byMonth[m] || 0); }) },
+        { name: "Paid", cssVar: "--series-1", values: months.map(function (m) { return byMonth[m] || 0; }) },
       ],
     });
 
