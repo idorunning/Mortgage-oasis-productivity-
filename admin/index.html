@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Mortgage Oasis — Admin</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/auth.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-name">Mortgage Oasis</span>
+    <span class="brand-sub">Admin</span>
+  </div>
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-view="overview">Overview</button>
+    <button class="tab" data-view="tracker">Commission tracker</button>
+    <button class="tab" data-view="statements">Statements</button>
+  </nav>
+  <div class="topbar-right">
+    <select id="year-filter" class="select" aria-label="Year filter">
+      <option value="all">All years</option>
+    </select>
+    <button id="theme-toggle" class="icon-btn" title="Toggle dark mode" aria-label="Toggle dark mode">◐</button>
+  </div>
+</header>
+
+<main id="app">
+  <section id="view-overview" class="view active"></section>
+  <section id="view-tracker" class="view"></section>
+  <section id="view-statements" class="view"></section>
+  <p id="load-error" class="load-error" hidden>
+    Couldn&rsquo;t load dashboard data. If you opened this page directly from disk,
+    run a local server instead (e.g. <code>python3 -m http.server</code> from the
+    site root) &mdash; browsers block <code>fetch()</code> on <code>file://</code> pages.
+  </p>
+</main>
+
+<footer class="pagefoot">
+  <span id="data-meta"></span>
+</footer>
+
+<script src="assets/app.js"></script>
+</body>
+</html>
