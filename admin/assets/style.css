@@ -202,6 +202,23 @@ table.data .neg { color: var(--bad-text); }
 .rowlink { cursor: pointer; }
 .empty { color: var(--muted); padding: 18px 0; }
 
+/* chase workflow */
+.chase-btn {
+  font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer;
+  color: var(--accent); background: none;
+  border: 1px solid var(--accent); border-radius: 8px; padding: 4px 12px;
+  white-space: nowrap;
+}
+.chase-btn:hover { background: var(--wash); }
+.chase-meta { display: block; font-size: 12px; color: var(--muted); margin-top: 3px; white-space: nowrap; }
+
+/* GI toggle on the recurring tab */
+.check-label {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 13.5px; color: var(--ink-2); cursor: pointer; user-select: none;
+}
+.check-label input { accent-color: var(--accent); width: 15px; height: 15px; }
+
 .pagefoot {
   max-width: 1180px; margin: 0 auto; width: 100%;
   padding: 10px 24px 26px; font-size: 12px; color: var(--muted);

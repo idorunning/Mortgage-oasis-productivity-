@@ -43,8 +43,24 @@ Three views, all filterable by year (top-right):
   Both thresholds are sliding scales on the Reconciliation view; they apply
   across the dashboard (the tracker table shows the same Overdue/variance
   badges) and are remembered per device.
+- **Recurring income** — monthly totals of the drip income on the statements,
+  split by class: **NI** (non-indemnity) and **R** (recurring trail). GI-type
+  items are hidden by default behind an "Include GI" toggle. (Classes on the
+  statements: M = mortgage, I = insurance, NI = non-indemnity, R = recurring.)
 - **Statements** — weekly consolidation statements with monthly totals and
   per-statement line items (click a row to expand).
+
+### Chasing overdue commission
+
+Overdue rows on the Reconciliation view have a **Chase** button. It opens Gmail
+with a formal chase email to the network pre-filled (client, reference,
+provider, amount due, days outstanding — edit before sending) and records the
+chase, showing *Chased &lt;date&gt; · follow up &lt;date + 1 week&gt;*. Once the
+follow-up date passes with the commission still outstanding, the row is badged
+**Follow up due** and the button becomes **Chase again**. Chase history is
+stored per device (localStorage), like the threshold sliders. The recipient
+address is `CHASE_TO` near the top of the chase section in
+`admin/assets/app.js`.
 
 ## Monthly routine: dropping in new statements
 

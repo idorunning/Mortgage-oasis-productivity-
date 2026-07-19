@@ -14,7 +14,18 @@
     openStatement: null,
     unmatchedItems: [],
     recon: loadReconSettings(),
+    includeGI: false,
+    chases: loadChases(),
   };
+
+  function loadChases() {
+    try { return JSON.parse(localStorage.getItem("mo-chases") || "{}"); }
+    catch (e) { return {}; }
+  }
+
+  function saveChases() {
+    try { localStorage.setItem("mo-chases", JSON.stringify(state.chases)); } catch (e) {}
+  }
 
   function loadReconSettings() {
     var defaults = { days: 90, variancePct: 25 };
@@ -135,6 +146,80 @@
   function isVarianceFlagged(c) {
     var v = variancePct(c);
     return v != null && Math.abs(v) > state.recon.variancePct;
+  }
+
+  // ---------- chase workflow ----------
+  // Chasing an overdue case opens a pre-filled Gmail compose to the network
+  // and records the chase locally (this device) with a follow-up a week out.
+
+  var CHASE_TO = "commissions@therightmortgage.co.uk";
+
+  function chaseKey(c) {
+    return [c.register, c.date, c.client, c.provider].join("|");
+  }
+
+  function chaseFor(c) {
+    return state.chases[chaseKey(c)] || null;
+  }
+
+  function isoToday() {
+    var d = new Date();
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") +
+      "-" + String(d.getDate()).padStart(2, "0");
+  }
+
+  function isoPlusDays(iso, days) {
+    var d = new Date(iso + "T00:00:00");
+    d.setDate(d.getDate() + days);
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") +
+      "-" + String(d.getDate()).padStart(2, "0");
+  }
+
+  function shortDate(iso) {
+    if (!iso) return "";
+    var d = new Date(iso + "T00:00:00");
+    return d.getDate() + " " + MONTH_NAMES[d.getMonth()];
+  }
+
+  function isFollowUpDue(c) {
+    var chase = chaseFor(c);
+    return !!chase && caseStatus(c) === "outstanding" && isoToday() >= chase.followUpDue;
+  }
+
+  function chaseEmailUrl(c) {
+    var subject = "Outstanding commission — " + (c.client || "client") +
+      (c.provider ? " / " + c.provider : "");
+    var lines = [
+      "Hello,",
+      "",
+      "We have an outstanding commission payment that has not yet appeared on our consolidation statements, and I would like an update on when it will be paid.",
+      "",
+      "Client: " + (c.client || "—"),
+      "Reference / property: " + (c.property || "—"),
+      "Provider / lender: " + (c.provider || "—"),
+      "Product: " + ((c.business || "") + (c.product && c.product !== c.business ? " — " + c.product : "") || "—"),
+      "Date written: " + (c.date || "—"),
+    ];
+    if (c.completedDate) lines.push("Completed / on risk: " + c.completedDate);
+    if (c.commissionWritten != null) lines.push("Commission due: " + gbp(c.commissionWritten));
+    var age = ageDays(c.date);
+    if (age != null) lines.push("Days outstanding: " + age);
+    lines.push(
+      "",
+      "Please confirm the payment date, or include this commission on the next consolidation statement. If there is an issue holding up payment, let me know what is needed to resolve it.",
+      "",
+      "Kind regards,",
+      "Mortgage Oasis Limited"
+    );
+    return "https://mail.google.com/mail/?view=cm&fs=1&to=" + encodeURIComponent(CHASE_TO) +
+      "&su=" + encodeURIComponent(subject) +
+      "&body=" + encodeURIComponent(lines.join("\n"));
+  }
+
+  function recordChase(c) {
+    var today = isoToday();
+    state.chases[chaseKey(c)] = { chasedOn: today, followUpDue: isoPlusDays(today, 7) };
+    saveChases();
   }
 
   // ---------- statement ↔ tracker matching ----------
@@ -837,11 +922,31 @@
         el("th", { text: "Date" }), el("th", { text: "Client" }), el("th", { text: "Business" }),
         el("th", { text: "Provider" }), el("th", { class: "num", text: "Predicted" }),
         el("th", { class: "num", text: "Days waiting" }), el("th", { text: "Status" }),
+        el("th", { text: "Action" }),
       ])]));
       var tb1 = el("tbody");
       outstanding.slice().sort(function (a, b) { return (a.date || "").localeCompare(b.date || ""); })
         .forEach(function (c) {
           var age = ageDays(c.date);
+          var chase = chaseFor(c);
+          var statusBits = [];
+          if (isFollowUpDue(c)) statusBits.push(el("span", { class: "badge bad", text: "Follow up due" }));
+          else if (isOverdue(c)) statusBits.push(el("span", { class: "badge bad", text: "Overdue" }));
+          else statusBits.push(el("span", { class: "badge wait", text: "Awaiting" }));
+          if (chase) statusBits.push(el("span", {
+            class: "chase-meta",
+            text: "Chased " + shortDate(chase.chasedOn) + " · follow up " + shortDate(chase.followUpDue),
+          }));
+          var actionCell = el("td", {});
+          if (isOverdue(c)) {
+            var btn = el("button", { class: "chase-btn", text: chase ? "Chase again" : "Chase" });
+            btn.addEventListener("click", function () {
+              window.open(chaseEmailUrl(c), "_blank", "noopener");
+              recordChase(c);
+              refreshReconTables();
+            });
+            actionCell.appendChild(btn);
+          }
           tb1.appendChild(el("tr", {}, [
             el("td", { text: c.date || "—" }),
             el("td", { text: c.client || "—", title: c.property || "" }),
@@ -849,12 +954,11 @@
             el("td", { text: c.provider || "—" }),
             el("td", { class: "num", text: gbp(c.commissionWritten) }),
             el("td", { class: "num", text: age != null ? String(age) : "—" }),
-            el("td", {}, [isOverdue(c)
-              ? el("span", { class: "badge bad", text: "Overdue" })
-              : el("span", { class: "badge wait", text: "Awaiting" })]),
+            el("td", {}, statusBits),
+            actionCell,
           ]));
         });
-      if (!outstanding.length) tb1.appendChild(el("tr", {}, [el("td", { colspan: "7", class: "empty", text: "Nothing outstanding in this period." })]));
+      if (!outstanding.length) tb1.appendChild(el("tr", {}, [el("td", { colspan: "8", class: "empty", text: "Nothing outstanding in this period." })]));
       t1.appendChild(tb1);
       card1.appendChild(el("div", { class: "table-scroll" }, [t1]));
       tablesWrap.appendChild(card1);
@@ -959,6 +1063,113 @@
     }
 
     refreshReconTables();
+  }
+
+  // ---------- recurring income view ----------
+  // Statement line items by class: M = mortgage, I = insurance (indemnified),
+  // NI = non-indemnity, R = recurring trail. This view tracks the drip income
+  // (NI + R) as monthly totals; GI-type items are hidden behind a toggle.
+
+  function renderRecurring() {
+    var root = document.getElementById("view-recurring");
+    root.innerHTML = "";
+
+    var byMonth = {};
+    var totals = { NI: 0, R: 0 };
+    var itemCount = 0, giHidden = 0;
+    filteredStatements().forEach(function (s) {
+      var m = monthKey(s.date);
+      s.items.forEach(function (item) {
+        if (item.class !== "NI" && item.class !== "R") return;
+        if (item.type === "GI" && !state.includeGI) { giHidden++; return; }
+        byMonth[m] = byMonth[m] || { NI: 0, R: 0 };
+        byMonth[m][item.class] += item.amount;
+        totals[item.class] += item.amount;
+        itemCount++;
+      });
+    });
+    var months = monthRange(Object.keys(byMonth));
+
+    var tiles = el("div", { class: "tile-row" });
+    [
+      { label: "Recurring (R) income", value: gbp(totals.R, { compact: true }) },
+      { label: "Non-indemnity (NI) income", value: gbp(totals.NI, { compact: true }) },
+      { label: "Monthly average (NI + R)", value: gbp(months.length ? (totals.NI + totals.R) / months.length : 0, { compact: true }) },
+      { label: "Payments", value: String(itemCount) },
+    ].forEach(function (tdef) {
+      tiles.appendChild(el("div", { class: "tile" }, [
+        el("div", { class: "label", text: tdef.label }),
+        el("div", { class: "value", text: tdef.value }),
+      ]));
+    });
+    root.appendChild(tiles);
+
+    var giToggle = el("label", { class: "check-label" });
+    var giBox = el("input", { type: "checkbox" });
+    giBox.checked = state.includeGI;
+    giBox.addEventListener("change", function () {
+      state.includeGI = giBox.checked;
+      renderRecurring();
+    });
+    giToggle.appendChild(giBox);
+    giToggle.appendChild(el("span", {
+      text: "Include GI" + (!state.includeGI && giHidden ? " (" + giHidden + " hidden)" : ""),
+    }));
+
+    var chartCard = el("div", { class: "card" });
+    chartCard.appendChild(el("div", { class: "card-head" }, [
+      el("div", {}, [
+        el("h2", { text: "Recurring income by month" }),
+        el("div", { class: "sub", text: "Monthly totals of NI and R class payments on the consolidation statements." }),
+      ]),
+      el("div", { class: "spacer" }),
+      giToggle,
+      legend([
+        { name: "Non-indemnity (NI)", cssVar: "--series-1" },
+        { name: "Recurring (R)", cssVar: "--series-2" },
+      ]),
+    ]));
+    var chart = el("div");
+    chartCard.appendChild(chart);
+    root.appendChild(chartCard);
+    columnChart(chart, {
+      labels: months.map(monthLabel),
+      tipTitle: function (i) { return monthLabel(months[i]); },
+      series: [
+        { name: "Non-indemnity (NI)", cssVar: "--series-1", values: months.map(function (m) { return (byMonth[m] || {}).NI || 0; }) },
+        { name: "Recurring (R)", cssVar: "--series-2", values: months.map(function (m) { return (byMonth[m] || {}).R || 0; }) },
+      ],
+    });
+
+    var tableCard = el("div", { class: "card" });
+    tableCard.appendChild(el("div", { class: "card-head" }, [
+      el("div", {}, [
+        el("h2", { text: "Monthly totals" }),
+        el("div", { class: "sub", text: "Newest first. Negative amounts are clawbacks/debits on the statements." }),
+      ]),
+    ]));
+    var table = el("table", { class: "data" });
+    table.appendChild(el("thead", {}, [el("tr", {}, [
+      el("th", { text: "Month" }),
+      el("th", { class: "num", text: "Non-indemnity (NI)" }),
+      el("th", { class: "num", text: "Recurring (R)" }),
+      el("th", { class: "num", text: "Total" }),
+    ])]));
+    var tbody = el("tbody");
+    months.slice().reverse().forEach(function (m) {
+      var row = byMonth[m] || { NI: 0, R: 0 };
+      var total = row.NI + row.R;
+      tbody.appendChild(el("tr", {}, [
+        el("td", { text: monthLabel(m) }),
+        el("td", { class: "num " + (row.NI < 0 ? "neg" : ""), text: gbp(row.NI) }),
+        el("td", { class: "num " + (row.R < 0 ? "neg" : ""), text: gbp(row.R) }),
+        el("td", { class: "num " + (total < 0 ? "neg" : ""), text: gbp(total) }),
+      ]));
+    });
+    if (!months.length) tbody.appendChild(el("tr", {}, [el("td", { colspan: "4", class: "empty", text: "No NI or R payments in this period." })]));
+    table.appendChild(tbody);
+    tableCard.appendChild(el("div", { class: "table-scroll" }, [table]));
+    root.appendChild(tableCard);
   }
 
   // ---------- statements view ----------
@@ -1077,6 +1288,7 @@
   function renderAllExceptRecon() {
     renderOverview();
     renderTracker();
+    renderRecurring();
     renderStatements();
   }
 
@@ -1084,6 +1296,7 @@
     renderOverview();
     renderTracker();
     renderReconciliation();
+    renderRecurring();
     renderStatements();
     var meta = document.getElementById("data-meta");
     meta.textContent = "Tracker: " + state.tracker.cases.length + " cases · Statements: " +
